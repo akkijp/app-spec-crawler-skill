@@ -1,0 +1,2 @@
+# 任意: scripts/crawl.py（Playwright 方式）を使うときだけ要る。browser-use 方式（app-spec-crawler crawl）では不要
+playwright>=1.45

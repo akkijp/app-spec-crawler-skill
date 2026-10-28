@@ -1,0 +1,32 @@
+{
+  "_comment": "クリック・遷移の禁止判定に使うキーワード。要素のテキスト / aria-label / title / name / id / class / href / value を小文字化して部分一致で判定する。追加・削除して調整してよいが、既定のものを削って緩めるのは推奨しない。",
+
+  "deny_click_keywords": [
+    "保存", "登録", "更新", "送信", "確定", "決定", "適用", "反映", "実行", "削除", "消去", "破棄", "取消", "取り消", "キャンセル",
+    "承認", "却下", "差戻", "差し戻", "公開", "非公開", "下書き", "投稿", "発行", "発送", "出荷", "購入", "支払", "決済", "注文", "申込", "申し込",
+    "契約", "解約", "退会", "ログアウト", "サインアウト", "インポート", "アップロード", "同期", "リセット", "初期化", "再生成", "変換", "移動", "複製", "コピーを作成",
+    "招待", "メール送信", "通知を送", "一括", "無効化", "有効化", "アーカイブ", "復元", "ロック", "解除", "切り替え",
+    "save", "submit", "update", "apply", "confirm", "ok", "yes", "delete", "remove", "destroy", "discard", "cancel", "reset", "clear",
+    "approve", "reject", "publish", "unpublish", "post", "send", "ship", "order", "buy", "purchase", "pay", "checkout", "subscribe", "unsubscribe",
+    "logout", "log out", "sign out", "signout", "import", "upload", "sync", "regenerate", "execute", "run", "trigger", "invite", "archive", "restore",
+    "enable", "disable", "activate", "deactivate", "lock", "unlock", "toggle", "move", "duplicate", "clone", "merge", "revoke", "deploy", "release"
+  ],
+
+  "deny_url_keywords": [
+    "logout", "log-out", "signout", "sign-out", "delete", "destroy", "remove", "revoke", "unsubscribe", "cancel", "approve", "reject",
+    "publish", "archive", "restore", "reset", "purge", "truncate", "export", "download", "import", "sync", "run", "execute",
+    "ログアウト", "削除", "退会", "解約"
+  ],
+
+  "allow_click_keywords_hint": [
+    "詳細", "表示", "閲覧", "プレビュー", "開く", "展開", "折りたたむ", "絞り込み", "フィルタ", "並び替え", "ソート", "検索", "次へ", "前へ", "もっと見る", "ヘルプ", "メニュー", "設定を見る",
+    "view", "show", "detail", "preview", "open", "expand", "collapse", "filter", "sort", "search", "next", "prev", "more", "help", "menu", "info"
+  ],
+
+  "close_selectors": [
+    "[aria-label='閉じる']", "[aria-label='Close']", "[aria-label='close']", "[title='閉じる']", "[title='Close']",
+    "button.close", ".modal-close", ".btn-close", "[data-dismiss='modal']", "[data-bs-dismiss='modal']", "[data-testid*='close']"
+  ],
+
+  "clickable_selector": "button, [role='button'], [role='tab'], [role='menuitem'], [role='switch'], summary, [aria-haspopup], [data-toggle], [data-bs-toggle], a:not([href]), a[href^='#'], a[href^='javascript']"
+}

@@ -1,0 +1,4 @@
+#!/bin/sh
+# app-spec-crawler のコマンド。中身は scripts/app_spec_crawler.py
+DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+exec python3 "$DIR/../scripts/app_spec_crawler.py" "$@"
