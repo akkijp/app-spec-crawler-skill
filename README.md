@@ -1,6 +1,6 @@
 # app-spec-crawler
 
-<!-- メインビジュアル -->
+<p align="center"><img src="assets/hero.png" alt="Web アプリの画面を巡回して撮り、仕様書にまとめる app-spec-crawler のイメージ" width="100%"></p>
 
 **ログイン済みの Web アプリを、読み取り専用で全画面めぐり、スクリーンショット付きの仕様書を作る [Claude Code](https://docs.anthropic.com/en/docs/claude-code) スキル。**
 
