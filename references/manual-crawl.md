@@ -22,7 +22,8 @@ browser-use が使えないとき、または利用者が「computer-use で」�
 - 作業用のタブは `new_tab()` で 1 つだけ作り、利用者のタブには触らない。終わったら `close_tab()` で閉じる。
 - `app-spec-crawler crawl` はこれらを自動で行う（専用の接続 `BU_NAME=app-spec-crawler`・`BU_CDP_WS` の組み立て・作業用タブ・区切った実行・ログイン切れの検知）。以下は自分でスクリプトを書くときの注意。
 - 巡回は Python のスクリプトにして `browser-use < script.py` で流す（helpers は読み込み済み）。状態（キュー・訪問済み・pages）を JSON に毎ページ書き、30 画面ずつのように区切って何度も流せる形にする（1 回の実行の時間切れに備える）。
-- スクリーンショットは `Emulation.setDeviceMetricsOverride` で幅 1400px・高さをページの高さ（上限 6000px）にしてから `capture_screenshot()`。撮ったら 1400×900 に戻す。背景のタブのままで撮れる（Chrome を前に出さない）。
+- スクリーンショットは、まず画面の中のスクロール枠（中身が枠より長い `overflow:auto/scroll` の要素）を中身の高さまで広げ（`bu_crawl.py` の `EXPAND`。DOM の見た目だけを変える）、`Emulation.setDeviceMetricsOverride` で幅 1400px・高さをページの高さにしてから `capture_screenshot()`。6000px より長い画面は 6000px ずつスクロールして続きを `pXXX_s02.png` … に撮り、`states` に `s02` … として足す（**長さ・深さを理由に打ち切らない**。上限は 1 画面 20 枚＝120000px で、超えたら crawl.log に残す）。撮ったら 1400×900 に戻す。背景のタブのままで撮れる（Chrome を前に出さない）。
+- 構造の読み取り（`EXTRACT`）は `JSON.stringify` して文字列で受け取り、フォームと入力欄の `name` `id` `method` は `getAttribute()` で取る。`name="name"` や `name="id"` の入力欄があるフォームでは `form.name` が入力欄の要素を返し、要素が結果に紛れ込んで CDP が `Object reference chain is too long` で落ちる。
 
 ## 作業ディレクトリ
 ```
@@ -66,7 +67,7 @@ spec_out/
       "forms": [{"index": 0, "action": "", "method": "GET", "name": "search",
                  "fields": [{"tag": "input", "type": "text", "name": "q", "id": "", "placeholder": "検索", "required": false, "label": "キーワード"}]}],
       "looseFields": [], "tables": [{"caption": "", "headers": ["ID", "名前"], "rows": 20}], "nav": ["ホーム 顧客 設定"],
-      "modals_on_load": [], "bodyText": "（本文テキスト先頭 4000 文字）",
+      "modals_on_load": [], "bodyText": "（本文テキスト先頭 40000 文字）",
       "links": [{"text": "顧客", "href": "https://app.example.com/customers", "internal": true, "norm": "https://app.example.com/customers"},
                 {"text": "ログアウト", "href": "https://app.example.com/logout", "internal": true, "skipped": "危険URLキーワード: logout"}],
       "clickables": [{"index": 0, "tag": "button", "text": "絞り込み", "ariaLabel": "", "title": "", "role": "", "type": "button",

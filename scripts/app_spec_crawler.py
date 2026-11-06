@@ -68,6 +68,9 @@ crawl のおもなオプション
   --allow-route PATH        危険な言葉を含んでも開いてよい画面（例: /export/select）
   --max-pages N / --max-depth N / --batch N / --wait 秒
   --no-tabs                 ページ内タブ（#xxx）もクリックしない
+  --retry-errors            前回エラーで取れなかった画面を取り直す（--resume と一緒に）
+  --relogin CMD             ログインが切れたら CMD でログインし直して続ける（無ければ止まる。終了コード 3）
+  --relogin-max N           ログインし直す上限（既定 3 回。超えたら止まる）
   --hide SELECTOR           撮る前に隠す重なり（サイト内ヘルプ・チャット窓などの CSS セレクタ。複数可）
 
 安全
@@ -272,11 +275,12 @@ def cmd_crawl(a) -> int:
            "route_param": a.route_param, "variant_params": a.variant_param, "exclude": a.exclude, "allow_routes": a.allow_route,
            "extra_deny": a.extra_deny, "hide_selectors": DEFAULT_HIDE + a.hide, "session_error_patterns": DEFAULT_SESSION + a.session_text,
            "tabs": not a.no_tabs, "keep_query": a.keep_query, "id_collapse": not a.no_id_collapse,
-           "batch": a.batch, "max_pages": a.max_pages, "max_depth": a.max_depth, "wait": a.wait}
+           "retry_errors": a.retry_errors, "run_id": str(os.getpid()) + "-" + str(int(__import__("time").time())), "batch": a.batch, "max_pages": a.max_pages, "max_depth": a.max_depth, "wait": a.wait}
     cfg_path = out / "crawl_config.json"
     cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=1))
     print(f"巡回を始めます: {a.url}\n  出力先: {out}\n  1 回 {a.batch} 画面ずつ、上限 {a.max_pages} 画面。ログイン切れを見つけたら止まります。")
     first = True
+    relogins = 0
     for _ in range(1000):
         res = run_bu(SCRIPTS / "bu_crawl.py", {"ASC_CONFIG": str(cfg_path)}, 600, first=first)
         first = False
@@ -296,6 +300,24 @@ def cmd_crawl(a) -> int:
             print(f"\n✔ 巡回が終わりました（{msg}）\n  画面 {len(s['pages'])} / 開かなかった URL {len(s['skipped_urls'])} / 押さなかった要素 {len(s['skipped_elements'])} / エラー {len(s['errors'])}")
             print(f"  次: {NAME} describe {out}")
             return OK
+        if status in ("session", "start_failed") and a.relogin and relogins < a.relogin_max:
+            relogins += 1
+            print(f"  ! ログインが切れた（{msg}）。--relogin でログインし直す（{relogins}/{a.relogin_max} 回目）")
+            env = dict(os.environ, ASC_OUT=str(out), ASC_URL=a.url, BU_NAME=BU_NAME)
+            ws, _ = devtools_ws()
+            if ws:
+                env["BU_CDP_WS"] = ws
+            try:
+                r = subprocess.run(a.relogin, shell=True, env=env, capture_output=True, text=True, timeout=a.relogin_timeout)
+            except subprocess.TimeoutExpired:
+                raise Fail(E_SESSION, "ログインし直しが時間内に終わらなかった", f"--relogin のコマンドが {a.relogin_timeout} 秒で終わらなかった（1Password の承認待ち等）", [
+                    "承認画面が出ていれば許可を押してから、同じコマンドに --resume を付けてもう一度流す"])
+            if r.returncode != 0:
+                tail = "\n      ".join((r.stdout + r.stderr).strip().splitlines()[-6:])
+                raise Fail(E_SESSION, "ログインし直しに失敗した", f"--relogin のコマンドが終了コード {r.returncode} で終わった:\n      {tail}", [
+                    "Chrome で対象アプリにログインし直す（人の操作）", f"{NAME} crawl ... --resume で続きから回す"])
+            print("  ✔ ログインし直した。続きから回す")
+            continue
         if status in ("session", "start_failed"):
             raise Fail(E_SESSION, "ログインが切れている" if status == "session" else "起点の画面がログイン済みで開けない", msg, [
                 "Chrome で対象アプリにログインし直す（人の操作）",
@@ -495,6 +517,10 @@ def main() -> int:
     c.add_argument("--max-pages", type=int, default=300)
     c.add_argument("--max-depth", type=int, default=10)
     c.add_argument("--wait", type=float, default=1.0)
+    c.add_argument("--retry-errors", action="store_true", help="前回エラーで取れなかった画面を取り直す（--resume と一緒に使う）")
+    c.add_argument("--relogin", help="ログインが切れたときに流すコマンド（終了コード 0 でログインし直せたとみなし、続きから回る）")
+    c.add_argument("--relogin-max", type=int, default=3, help="ログインし直す上限の回数。超えたら止まる")
+    c.add_argument("--relogin-timeout", type=int, default=180)
     for n in ("describe", "build", "verify"):
         sub.add_parser(n).add_argument("dir")
     w = sub.add_parser("write")

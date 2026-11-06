@@ -13,7 +13,7 @@
   ],
 
   "deny_url_keywords": [
-    "logout", "log-out", "signout", "sign-out", "delete", "destroy", "remove", "revoke", "unsubscribe", "cancel", "approve", "reject",
+    "logout", "log-out", "signout", "sign-out", "sign_out", "log_out", "signoff", "sign-off", "delete", "destroy", "remove", "revoke", "unsubscribe", "cancel", "approve", "reject",
     "publish", "archive", "restore", "reset", "purge", "truncate", "export", "download", "import", "sync", "run", "execute",
     "ログアウト", "削除", "退会", "解約"
   ],

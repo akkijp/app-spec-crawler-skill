@@ -21,6 +21,7 @@ ROUTE = C.get("route_param") or ""
 VARIANTS = C.get("variant_params") or []
 SCOPE = C["scope_prefix"]
 HIDE = ",".join(C["hide_selectors"])
+LOGIN_PATH_RE = re.compile(r"/(log_?in|sign_?in|signin|auth/login)(/|$)", re.I)  # ログイン画面の URL のパスの形
 SESSION_RE = re.compile("|".join(C["session_error_patterns"]), re.I) if C.get("session_error_patterns") else None
 
 
@@ -108,18 +109,18 @@ EXTRACT = r"""(() => {
     const tr = el.closest('tr'); if (tr) { const th = tr.querySelector('th'); if (th) return t(th.innerText).slice(0,60); }
     const td = el.closest('td'); if (td && td.previousElementSibling) return t(td.previousElementSibling.innerText).slice(0,60);
     return el.getAttribute('aria-label') || ''; };
-  const field = el => ({tag: el.tagName.toLowerCase(), type: el.type||'', name: el.name||'', id: el.id||'', placeholder: el.placeholder||'',
+  const field = el => ({tag: el.tagName.toLowerCase(), type: String(el.getAttribute('type')||el.type||''), name: el.getAttribute('name')||'', id: el.getAttribute('id')||'', placeholder: el.getAttribute('placeholder')||'',
     required: !!el.required, label: lab(el), options: el.tagName==='SELECT' ? [...el.options].slice(0,30).map(o=>t(o.text)) : undefined});
   const onclickHref = b => { const m=(b.getAttribute('onclick')||'').match(/location\.href\s*=\s*['"]([^'"]+)['"]/); return m ? new URL(m[1].replace(/&amp;/g,'&'), location.href).href : null; };
   return {
     title: document.title,
     headings: [...document.querySelectorAll('h1,h2,h3,h4')].filter(vis).map(h=>({level:h.tagName, text:t(h.innerText).slice(0,120)})).filter(h=>h.text).slice(0,80),
-    forms: [...document.forms].map((f,i)=>({index:i, action:(f.getAttribute('action')||'').slice(0,200), method:(f.method||'get').toUpperCase(), name:f.name||f.id||'',
+    forms: [...document.forms].map((f,i)=>({index:i, action:(f.getAttribute('action')||'').slice(0,200), method:(f.getAttribute('method')||'get').toUpperCase(), name:f.getAttribute('name')||f.getAttribute('id')||'',
       fields:[...f.elements].filter(e=>['INPUT','SELECT','TEXTAREA'].includes(e.tagName) && e.type!=='hidden' && vis(e)).slice(0,120).map(field)})).filter(f=>f.fields.length),
     tables: [...document.querySelectorAll('table')].filter(vis).slice(0,30).map(tb=>({caption:t(tb.caption&&tb.caption.innerText),
       headers:[...tb.querySelectorAll('thead th, tr:first-child th')].map(th=>t(th.innerText).slice(0,40)).slice(0,60), rows: tb.querySelectorAll('tbody tr').length})),
     nav: [...document.querySelectorAll('nav, [role=navigation]')].filter(vis).map(n=>t(n.innerText).slice(0,600)).slice(0,5),
-    bodyText: t(document.body.innerText).slice(0,4000),
+    bodyText: t(document.body.innerText).slice(0,40000),
     links: [...document.querySelectorAll('a[href]')].map(a=>({text:t(a.innerText||a.title||a.getAttribute('aria-label')).slice(0,60), href:a.href}))
       .concat([...document.querySelectorAll('[onclick*="location.href"]')].map(b=>({text:t(b.innerText||b.value||b.title).slice(0,60), href:onclickHref(b), via:'onclick'})).filter(l=>l.href)),
     buttons: [...document.querySelectorAll('button, input[type=button], input[type=submit], input[type=reset], [role=button], [role=tab], a[href^="#"], a[href^="javascript"]')].filter(vis).slice(0,150)
@@ -137,15 +138,55 @@ def hide_overlays():
         js("(()=>{const s=document.createElement('style');s.textContent=%s+'{display:none!important}';document.head.appendChild(s);})()" % json.dumps(HIDE))
 
 
+EXPAND = r"""(() => {
+  // 画面の中のスクロール枠（中身が枠より長いもの）を、中身の高さまで広げる。DOM の見た目だけを変え、サーバーには何も送らない
+  let n = 0;
+  for (const e of document.querySelectorAll('body *')) {
+    const cs = getComputedStyle(e);
+    if (/(auto|scroll)/.test(cs.overflowY) && e.scrollHeight > e.clientHeight + 50 && e.clientHeight > 150) {
+      for (const [k, v] of [['height', 'auto'], ['max-height', 'none'], ['overflow', 'visible']]) e.style.setProperty(k, v, 'important');
+      n++;
+    }
+  }
+  if (n) for (const e of [document.documentElement, document.body])
+    for (const [k, v] of [['height', 'auto'], ['max-height', 'none'], ['overflow', 'visible']]) e.style.setProperty(k, v, 'important');
+  return n;
+})()"""
+
+TILE = 6000        # 1 枚の高さ。これより長い画面は続きを別の画像（pXXX_s02.png …）に分けて撮る
+MAX_TILES = 20     # 1 画面あたりの上限（120000px）。超えた分は記録に残す
+
+
 def shot(path):
+    """全体を撮る。TILE より長い画面は続きを分けて撮り、[(画像の相対パス, 上端, 下端), ...] を返す（1 枚目を除く）"""
     hide_overlays()
     time.sleep(0.3)
     cdp("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
-    h = js("Math.min(document.documentElement.scrollHeight, 6000)") or 900
-    cdp("Emulation.setDeviceMetricsOverride", width=1400, height=int(h), deviceScaleFactor=1, mobile=False)
+    js(EXPAND)
     time.sleep(0.3)
-    capture_screenshot(path)
+    full = js("Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)") or 900
+    full = int(full)
+    tiles = []
+    y = 0
+    while y < full and len(tiles) < MAX_TILES:
+        hgt = min(TILE, full - y)
+        cdp("Emulation.setDeviceMetricsOverride", width=1400, height=max(int(hgt), 300), deviceScaleFactor=1, mobile=False)
+        js(f"window.scrollTo(0, {y})")
+        time.sleep(0.4)
+        out = path if y == 0 else path[:-4] + f"_s{len(tiles) + 1:02d}.png"
+        capture_screenshot(out)
+        tiles.append((os.path.relpath(out, OUT), y, y + hgt))
+        y += hgt
+    js("window.scrollTo(0, 0)")
     cdp("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
+    if y < full:
+        log(f"NOTE {os.path.basename(path)} 高さ {full}px のうち {y}px までを撮った（上限 {MAX_TILES} 枚）")
+    return tiles[1:]
+
+
+def tile_states(tiles, start):
+    return [{"id": f"s{i + 2:02d}", "label": f"続き {i + 2}/{len(tiles) + 1}（{a}〜{b}px）", "selector": "", "role": "scroll", "result": "縦長の画面の続き",
+             "screenshot": rel, "url_after": "", "modals": [], "changed": False} for i, (rel, a, b) in enumerate(tiles)][start:]
 
 
 def session_lost(url_now):
@@ -154,6 +195,10 @@ def session_lost(url_now):
         return f"画面に「{m.group(0)}」と出た（ログインが切れたときの表示）"
     if not url_now.startswith(SCOPE):
         return f"スコープの外（{url_now[:80]}）に飛ばされた。ログイン画面への転送と思われる"
+    # 同じドメインの中のログイン画面に戻されたとき（例: /login/client/?url=…、/users/sign_in）。
+    # スコープの中なので上の判定をすり抜け、ログイン画面を中身として撮り続けてしまう
+    if LOGIN_PATH_RE.search(urlparse(url_now).path) and js("!!document.querySelector('input[type=password]')"):
+        return f"ログイン画面（{url_now[:80]}）に戻された。ログインが切れたと思われる"
     return None
 
 
@@ -184,6 +229,15 @@ else:
     st["tab"] = current_tab()["target_id"]
 title_fix = re.compile(r"^\S*🐴\s*")
 
+# --retry-errors: 前回エラーで取れなかった画面を待ち行列の先頭に戻して取り直す（開いた記録からも外す）
+if C.get("retry_errors") and st["errors"] and st.get("retried_run") != C.get("run_id"):
+    for e in reversed(st["errors"]):
+        seen.discard(key_of(e["url"]))
+        st["queue"].insert(0, [e["url"], None, 1])
+    log(f"前回エラーになった {len(st['errors'])} 画面を取り直す")
+    st["errors"] = []
+    st["retried_run"] = C.get("run_id")  # 30 画面ずつ分けて流すので、取り直しはコマンド 1 回につき 1 度だけにする
+
 done = 0
 while st["queue"] and done < C["batch"] and len(st["pages"]) < C["max_pages"]:
     url, parent, depth = st["queue"].pop(0)
@@ -205,8 +259,8 @@ while st["queue"] and done < C["batch"] and len(st["pages"]) < C["max_pages"]:
             if not st["pages"]:
                 finish("start_failed", lost)
             finish("session", lost)
-        d = js(EXTRACT)
-        shot(os.path.join(OUT, "screenshots", f"{pid}.png"))
+        d = json.loads(js("JSON.stringify(" + EXTRACT + ")"))  # 文字列で受け取る。要素が紛れ込むと CDP が Object reference chain is too long で落ち、原因も分からないため
+        tiles = shot(os.path.join(OUT, "screenshots", f"{pid}.png"))
         cur = page_info()["url"]
         links = []
         for l in d["links"]:
@@ -230,12 +284,12 @@ while st["queue"] and done < C["batch"] and len(st["pages"]) < C["max_pages"]:
             clickables.append({"index": i, **b, "clickable": False, "reason": reason})
             if hit:
                 st["skipped_elements"].append({"page": pid, "text": b["text"], "selector": b["id"], "reason": reason})
-        states = []
+        states = tile_states(tiles, 0)
         if C.get("tabs", True):
             for t in list({t["hash"]: t for t in d["tabs"]}.values()):
                 if any(w and w in t["text"].lower() for w in DENY_CLICK):
                     continue
-                sid = f"c{len(states) + 1:02d}"
+                sid = f"c{len([x for x in states if x['id'].startswith('c')]) + 1:02d}"
                 goto_url(url)
                 wait_for_load()
                 time.sleep(C["wait"])
@@ -243,9 +297,12 @@ while st["queue"] and done < C["batch"] and len(st["pages"]) < C["max_pages"]:
                 if not ok:
                     continue
                 time.sleep(0.8)
-                shot(os.path.join(OUT, "screenshots", f"{pid}_{sid}.png"))
+                more = shot(os.path.join(OUT, "screenshots", f"{pid}_{sid}.png"))
                 states.append({"id": sid, "label": f"タブ「{t['text']}」", "selector": f"a[href$='{t['hash']}']", "role": "tab", "result": "画面内変化",
                                "screenshot": f"screenshots/{pid}_{sid}.png", "url_after": url.split("#")[0] + t["hash"], "modals": [], "changed": True})
+                for j, (rel, a, b) in enumerate(more):
+                    states.append({"id": f"{sid}_s{j + 2:02d}", "label": f"タブ「{t['text']}」の続き（{a}〜{b}px）", "selector": "", "role": "scroll",
+                                   "result": "縦長の画面の続き", "screenshot": rel, "url_after": "", "modals": [], "changed": False})
         st["pages"].append({"id": pid, "url": cur, "norm_url": norm_of(url), "requested_url": url, "depth": depth, "parent": parent,
                             "title": title_fix.sub("", d["title"] or ""), "visited_at": now(), "screenshot": f"screenshots/{pid}.png", "page_key": k,
                             "headings": d["headings"], "forms": d["forms"], "looseFields": [], "tables": d["tables"], "nav": d["nav"],
