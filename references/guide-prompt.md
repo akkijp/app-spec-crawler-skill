@@ -1,32 +1,36 @@
-あなたは業務システムの仕様書を書く担当です。下の「材料」（Web アプリを読み取り専用で巡回して作った、画面ごとの仕様のメモ）だけを使って、
-初めてこのシステムに触れる人（発注者・新しく入ったメンバー・非エンジニアの担当者）が読んで全体をつかめる「仕様書」を書いてください。
+You write specifications for business systems. Using only the "Material" below (notes on the spec of each screen, made by crawling a web application read-only),
+write a system guide that a person meeting this system for the first time (a client, a new team member, a non-engineer in charge) can read to grasp the whole of it.
 
-## 出すもの
+**Write the guide in {{LANGUAGE}}.** Every heading and all prose are in {{LANGUAGE}}. Quote UI labels, screen names and button labels exactly as they appear in the material; do not translate them.
 
-- `<article class="guide">` で始まり `</article>` で終わる HTML だけを出す。前後に説明文やコードフェンスを付けない。
-- `<html>` `<head>` `<style>` `<script>`、style 属性、on〜 属性は書かない。見た目はこちらで付ける。
+## What to output
 
-## 構成（この順。材料に無い節は省く）
+- Output only HTML that starts with `<article class="guide">` and ends with `</article>`. No explanation and no code fence before or after.
+- Do not write `<html>`, `<head>`, `<style>`, `<script>`, style attributes, or on… attributes. Styling is applied on our side.
 
-1. `<header class="g-hero">`: `<h1>` に「システム名 システム概要書」、`<p class="g-lead">` に「何のためのシステムか」を 2〜3 文。
-2. `<nav class="g-toc">`: 下の各節（`<section id="...">`）へのリンクの `<a>` だけを並べる（`<ul>` は使わない）。
-3. `<section id="whatis">` このシステムでできること: 3〜7 個の大きなまとまりを `<div class="g-cards">` と `<div class="g-card"><h3>…</h3><p>…</p></div>` で。
-4. `<section id="users">` 誰がどう使うか: 利用者の種類と、権限による見え方の違い。
-5. `<section id="map">` 画面の地図: メニューの階層を `<ul class="g-tree">` の入れ子で。各画面名は画面仕様へリンクする。
-6. `<section id="flows">` 主な業務の流れ: 2〜5 本。`<ol class="g-steps">` で、各手順に使う画面へのリンクを入れる。
-7. `<section id="features">` 機能ごとの説明: 機能の分類ごとに `<h3>`。各分類の中で、代表の画面を 1〜2 枚の `<figure class="g-shot">`（`<a href="pages/pXXX.html"><img src="screenshots/pXXX.png" alt="画面名" loading="lazy"></a><figcaption>…</figcaption>`）で見せ、その分類でできることを箇条書き。全画面を図にしなくてよい。
-8. `<section id="rules">` 決まりごと: 業務ルール・表示条件・制約を `<table class="g-table">`（列: 決まりごと / どの画面 / 確かさ）で。
-9. `<section id="terms">` 用語: システム固有の言葉を `<dl class="g-terms">` で。
-10. `<section id="open">` 確認が必要なこと: 材料の open_questions と「推定」の項目のうち、利用者や開発者に聞くべきものを箇条書き。
+## Structure (in this order; omit a section the material does not support)
 
-## 書き方
+The section titles below describe the content. Give each section an `<h2>` heading written in {{LANGUAGE}}. Keep the class names and section ids exactly as shown.
 
-- 正しい日本語の常体（だ・である）。普段の仕事の言葉で書く。一文を短く。専門用語は最初に一度だけ言い換える。
-- 材料にある事実だけを書く。数字・画面名・ボタン名・URL を変えない、足さない。材料が「推定」としたことは「〜と推定される」「（推定）」と書き、確かなことのように書かない。押していないボタンの結果を断定しない。
-- 「確かさ」の列は `<span class="g-ok">確認済</span>` `<span class="g-guess">推定</span>` `<span class="g-ask">要確認</span>` のどれか。
-- リンクと画像は材料の「使えるファイル」にあるパスだけを使う（`pages/pXXX.html` `captures/pXXX.html` `sections/….html` `screenshots/….png` `overview.html`）。外部 URL は書かない。
-- 仕様項目の ID（SPEC-…）や、巡回の手順・ツールの話は本文に出さない。
-- 個人名・社員番号など、スクリーンショットや材料に出ていた個人の情報は書かない。
-- 結論を先に書く。各節の最初の 1 文で、その節で分かることを言う。
+1. `<header class="g-hero">`: `<h1>` with the system name followed by the words for "System guide" in {{LANGUAGE}}, and `<p class="g-lead">` with what the system is for, in 2–3 sentences.
+2. `<nav class="g-toc">`: only `<a>` links to each section below (`<section id="...">`). Do not use `<ul>`.
+3. `<section id="whatis">` What you can do with this system: 3–7 large groups, as `<div class="g-cards">` with `<div class="g-card"><h3>…</h3><p>…</p></div>`.
+4. `<section id="users">` Who uses it and how: the kinds of users, and how what they see differs by permission.
+5. `<section id="map">` Map of the screens: the menu hierarchy as nested `<ul class="g-tree">`. Link each screen name to its screen spec.
+6. `<section id="flows">` Main workflows: 2–5 of them. Use `<ol class="g-steps">`, with a link to the screen used in each step.
+7. `<section id="features">` Feature by feature: an `<h3>` per feature category. In each category, show one or two representative screens as `<figure class="g-shot">` (`<a href="pages/pXXX.html"><img src="screenshots/pXXX.png" alt="screen name" loading="lazy"></a><figcaption>…</figcaption>`), then list what can be done in that category. You do not need a figure for every screen.
+8. `<section id="rules">` Rules: business rules, display conditions and constraints as `<table class="g-table">` (columns: Rule / Which screen / Confidence — column headings in {{LANGUAGE}}).
+9. `<section id="terms">` Terms: words specific to this system, as `<dl class="g-terms">`.
+10. `<section id="open">` Things to confirm: from the material's open_questions and its inferred items, list the ones that should be asked of users or developers.
 
-## 材料
+## How to write
+
+- Correct, plain {{LANGUAGE}}, in a neutral written register, in the words people use at work. Short sentences. Explain a technical term once, the first time it appears.
+- Write only facts that are in the material. Do not change or add numbers, screen names, button labels or URLs. Where the material marks something as `Inferred`, say so ("probably", "(inferred)", or the equivalent in {{LANGUAGE}}); never write it as if it were certain. Never state the result of a button that was not pressed as fact.
+- In the Confidence column use exactly one of `<span class="g-ok">{{VERIFIED}}</span>`, `<span class="g-guess">{{INFERRED}}</span>`, `<span class="g-ask">{{TO_CONFIRM}}</span>`.
+- For links and images use only paths listed under `available_files` in the material (`pages/pXXX.html`, `captures/pXXX.html`, `sections/….html`, `screenshots/….png`, `overview.html`). Do not write external URLs.
+- Do not put spec item IDs (SPEC-…), the crawl procedure or the tooling into the text.
+- Do not write personal information that appeared in the screenshots or the material (names, employee numbers, email addresses).
+- Lead with the conclusion. The first sentence of each section says what the reader learns from it.
+
+## Material

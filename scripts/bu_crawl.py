@@ -1,7 +1,10 @@
-# browser-use の中で実行する巡回スクリプト（app_spec_crawler.py crawl から呼ばれる。直接は使わない）。
-# helpers（goto_url / js / cdp / capture_screenshot など）は browser-use が読み込み済み。
-# 画面は URL で開くだけ。入力・送信はしない。クリックするのは「#xxx」へのページ内タブだけ（--no-tabs で止められる）。
-# 最後に 1 行 "ASC_STATUS=<more|done|session|start_failed|error> <説明>" を出す。
+# The crawl script that runs inside browser-use (called by `app_spec_crawler.py crawl`; not meant to be run directly).
+# The helpers (goto_url / js / cdp / capture_screenshot ...) are already loaded by browser-use.
+# Screens are only ever opened by URL. Nothing is typed and nothing is submitted. The only clicks are on in-page tabs
+# (links to "#name" on the current page), and --no-tabs turns even those off.
+# The last line printed is "ASC_STATUS=<more|done|session|start_failed|error> <message>".
+# The fixed phrases written into pages.json (state labels, results, reasons) are English; build_book.py translates them.
+import hashlib
 import datetime as dt
 import json
 import os
@@ -17,11 +20,14 @@ os.makedirs(os.path.join(OUT, "screenshots"), exist_ok=True)
 RULES = json.load(open(C["rules"]))
 DENY_URL = [k.lower() for k in RULES["deny_url_keywords"] + C.get("extra_deny", [])]
 DENY_CLICK = [k.lower() for k in RULES["deny_click_keywords"]]
+TOKEN_PARAMS = {k.lower() for k in RULES.get("state_token_params", [])}
+ACTION_PARAMS = {k.lower() for k in RULES.get("action_params", [])}
+SAFE_ACTIONS = {k.lower() for k in RULES.get("safe_action_values", [])}
 ROUTE = C.get("route_param") or ""
 VARIANTS = C.get("variant_params") or []
 SCOPE = C["scope_prefix"]
 HIDE = ",".join(C["hide_selectors"])
-LOGIN_PATH_RE = re.compile(r"/(log_?in|sign_?in|signin|auth/login)(/|$)", re.I)  # ログイン画面の URL のパスの形
+LOGIN_PATH_RE = re.compile(r"/(log_?in|sign_?in|signin|auth/login)(/|$)", re.I)  # what a login screen's URL path looks like
 SESSION_RE = re.compile("|".join(C["session_error_patterns"]), re.I) if C.get("session_error_patterns") else None
 
 
@@ -30,7 +36,7 @@ def now():
 
 
 def finish(status, msg=""):
-    if status != "more":  # 続きが無い・止まったときは作業用のタブを閉じる（続きは新しいタブで回す）
+    if status != "more":  # finished or stopped: close the working tab (a resumed run opens a new one)
         try:
             close_tab(st.get("tab"))
         except Exception:
@@ -42,7 +48,7 @@ def finish(status, msg=""):
 st = json.load(open(SP)) if os.path.exists(SP) else {
     "base": C["url"].split("?")[0], "queue": [[C["url"], None, 0]], "seen": [], "pages": [],
     "skipped_urls": [], "skipped_elements": [], "errors": [], "log": [], "tab": None}
-# ログインし直して URL のトークンが変わったときは、積んである URL の頭を新しいものに置き換える
+# After a re-login the token in the URL may have changed: rewrite the head of every queued URL to the new one
 new_base = C["url"].split("?")[0]
 if st.get("base") and st["base"] != new_base:
     st["queue"] = [[u.replace(st["base"], new_base, 1), p, d] for u, p, d in st["queue"]]
@@ -59,7 +65,7 @@ ID_SEG = re.compile(r"^(\d+|[0-9a-f]{8}-[0-9a-f-]{27,}|[0-9a-f]{24,})$", re.I)
 
 
 def route_of(url):
-    """画面を見分けるパスと、残すクエリ。route_param があればその値をパスとして扱う"""
+    """The path that identifies a screen, and the query parts to keep. With route_param, that parameter's value is the path."""
     u = urlparse(url)
     q = parse_qs(u.query)
     if ROUTE:
@@ -85,19 +91,33 @@ def norm_of(url):
 
 
 def verdict(url):
+    """Why this URL must not be opened, or None if it may be."""
     if not url.startswith(SCOPE):
-        return "スコープ外"
+        return "Out of scope"
     for pat in C.get("exclude", []):
         if re.search(pat, url):
-            return f"除外パターン: {pat}"
+            return f"Excluded pattern: {pat}"
+    u = urlparse(url)
+    q = parse_qs(u.query, keep_blank_values=True)
+    # Some apps change data on a plain GET link ("Trash", "Activate", "Approve"). Two signs give such links away:
+    # an anti-forgery token in the query, and an action parameter whose value is not a known read-only one.
+    # These two rules apply even to --allow-route screens.
+    if not C.get("allow_token_urls"):
+        for name in q:
+            if name.lower() in TOKEN_PARAMS:
+                return f"State-changing token in URL: {name}"
+    for name, vals in q.items():
+        if name.lower() in ACTION_PARAMS and name != ROUTE:
+            val = (vals[0] if vals else "").lower()
+            if val not in SAFE_ACTIONS:
+                return f"State-changing action: {name}={val[:40]}"
     path, _ = route_of(url)
     if path in C.get("allow_routes", []):
         return None
-    u = urlparse(url)
     target = (path + "?" + ("" if ROUTE else u.query)).lower()
     for k in DENY_URL:
         if k and k in target:
-            return f"危険URLキーワード: {k}"
+            return f"Risky URL keyword: {k}"
     return None
 
 
@@ -125,12 +145,50 @@ EXTRACT = r"""(() => {
       .concat([...document.querySelectorAll('[onclick*="location.href"]')].map(b=>({text:t(b.innerText||b.value||b.title).slice(0,60), href:onclickHref(b), via:'onclick'})).filter(l=>l.href)),
     buttons: [...document.querySelectorAll('button, input[type=button], input[type=submit], input[type=reset], [role=button], [role=tab], a[href^="#"], a[href^="javascript"]')].filter(vis).slice(0,150)
       .map(b=>({tag:b.tagName.toLowerCase(), text:t(b.innerText||b.value||b.title||b.getAttribute('aria-label')).slice(0,60), type:b.type||'', role:b.getAttribute('role')||'', id:b.id||'', inForm: !!b.closest('form')})),
-    // ページ内タブ = 今のページと同じ URL で、# の後ろに名前があるリンク（onclick 付きは除く）
+    // In-page tab = a link to the current URL with a name after '#' (links with onclick are excluded).
+    // Skip links for screen readers ("Skip to main content") are not tabs.
     tabs: [...document.querySelectorAll('a[href*="#"]')].filter(a=>vis(a) && !a.getAttribute('onclick')
+      && !/skip|screen-reader|sr-only|visually-hidden/i.test(a.className||'') && !/^(skip to|jump to|本文へ|メインコンテンツへ)/i.test(t(a.innerText))
       && a.href.split('#')[0]===location.href.split('#')[0] && /^[A-Za-z][\w-]*$/.test(a.href.split('#')[1]||''))
       .map(a=>({text:t(a.innerText).slice(0,40), hash:'#'+a.href.split('#')[1]})).filter(x=>x.text).slice(0,12)
   };
 })()"""
+
+
+SETTLE = r"""(() => {
+  const b = document.body; if (!b) return 'none';
+  const txt = (b.innerText || '');
+  const busy = document.querySelectorAll('[aria-busy="true"]').length
+    + (/(still loading|loading\s*(…|\.\.\.)|読み込み中|加载中|로딩 중|cargando\s*(…|\.\.\.))/i.test(txt.slice(0, 20000)) ? 1 : 0);
+  const imgs = [...document.images].filter(i => !i.complete).length;
+  return [document.readyState, document.getElementsByTagName('*').length, txt.length, imgs, busy].join('|');
+})()"""
+
+
+def settle():
+    """Wait until the page has finished drawing: at least C["wait"] seconds, then until two consecutive looks at the page
+    are identical and nothing says "loading", but never longer than C["settle_max"] seconds. Returns the seconds waited."""
+    t0 = time.time()
+    time.sleep(C["wait"])
+    limit = max(float(C.get("settle_max", 8.0)), C["wait"])
+    prev, same = None, 0
+    while time.time() - t0 < limit:
+        sig = js(SETTLE) or ""
+        idle = sig.startswith("complete") and sig.endswith("|0|0")
+        same = same + 1 if (sig == prev and idle) else 0
+        if same >= 2:
+            break
+        prev = sig
+        time.sleep(0.4)
+    return round(time.time() - t0, 1)
+
+
+def fingerprint(d):
+    """What a screen shows, reduced to a hash. Two URLs with the same fingerprint are the same screen under two addresses."""
+    body = re.sub(r"\s+", " ", d.get("bodyText") or "")[:8000]
+    heads = "|".join(h["text"] for h in d.get("headings", []))
+    fields = sum(len(f["fields"]) for f in d.get("forms", []))
+    return hashlib.sha1(f'{d.get("title")}\n{heads}\n{fields}\n{body}'.encode("utf-8")).hexdigest()
 
 
 def hide_overlays():
@@ -139,7 +197,7 @@ def hide_overlays():
 
 
 EXPAND = r"""(() => {
-  // 画面の中のスクロール枠（中身が枠より長いもの）を、中身の高さまで広げる。DOM の見た目だけを変え、サーバーには何も送らない
+  // Expand scrollable boxes inside the page (content taller than the box) to their full height. This changes only how the DOM is drawn; nothing is sent to the server.
   let n = 0;
   for (const e of document.querySelectorAll('body *')) {
     const cs = getComputedStyle(e);
@@ -153,12 +211,12 @@ EXPAND = r"""(() => {
   return n;
 })()"""
 
-TILE = 6000        # 1 枚の高さ。これより長い画面は続きを別の画像（pXXX_s02.png …）に分けて撮る
-MAX_TILES = 20     # 1 画面あたりの上限（120000px）。超えた分は記録に残す
+TILE = 6000        # height of one image; a taller screen continues in further images (pXXX_s02.png ...)
+MAX_TILES = 20     # limit per screen (120000px); what is left out is noted in the log
 
 
 def shot(path):
-    """全体を撮る。TILE より長い画面は続きを分けて撮り、[(画像の相対パス, 上端, 下端), ...] を返す（1 枚目を除く）"""
+    """Capture the whole page. A screen taller than TILE is captured in parts; returns [(relative image path, top, bottom), ...] without the first part."""
     hide_overlays()
     time.sleep(0.3)
     cdp("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
@@ -180,25 +238,25 @@ def shot(path):
     js("window.scrollTo(0, 0)")
     cdp("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
     if y < full:
-        log(f"NOTE {os.path.basename(path)} 高さ {full}px のうち {y}px までを撮った（上限 {MAX_TILES} 枚）")
+        log(f"NOTE {os.path.basename(path)}: captured {y}px of {full}px (limit {MAX_TILES} images)")
     return tiles[1:]
 
 
 def tile_states(tiles, start):
-    return [{"id": f"s{i + 2:02d}", "label": f"続き {i + 2}/{len(tiles) + 1}（{a}〜{b}px）", "selector": "", "role": "scroll", "result": "縦長の画面の続き",
+    return [{"id": f"s{i + 2:02d}", "label": f"Part {i + 2}/{len(tiles) + 1} ({a}–{b}px)", "selector": "", "role": "scroll", "result": "Continuation of a tall screen",
              "screenshot": rel, "url_after": "", "modals": [], "changed": False} for i, (rel, a, b) in enumerate(tiles)][start:]
 
 
 def session_lost(url_now):
     m = SESSION_RE.search(js("document.body ? document.body.innerText.slice(0,3000) : ''") or "") if SESSION_RE else None
     if m:
-        return f"画面に「{m.group(0)}」と出た（ログインが切れたときの表示）"
+        return f"the page shows \"{m.group(0)}\" (what it displays when the login has expired)"
     if not url_now.startswith(SCOPE):
-        return f"スコープの外（{url_now[:80]}）に飛ばされた。ログイン画面への転送と思われる"
-    # 同じドメインの中のログイン画面に戻されたとき（例: /login/client/?url=…、/users/sign_in）。
-    # スコープの中なので上の判定をすり抜け、ログイン画面を中身として撮り続けてしまう
+        return f"redirected out of scope ({url_now[:80]}); probably a redirect to the login screen"
+    # Sent back to a login screen on the same domain (e.g. /login/client/?url=..., /users/sign_in).
+    # It is inside the scope, so the check above misses it and the crawl would keep capturing the login screen as content.
     if LOGIN_PATH_RE.search(urlparse(url_now).path) and js("!!document.querySelector('input[type=password]')"):
-        return f"ログイン画面（{url_now[:80]}）に戻された。ログインが切れたと思われる"
+        return f"sent back to the login screen ({url_now[:80]}); the login has probably expired"
     return None
 
 
@@ -208,9 +266,10 @@ def write_outputs(complete):
             "generated_at": now(), "headless": False, "click_mode": "tabs" if C.get("tabs", True) else "none", "allow_mutations": False,
             "page_count": len(pages), "state_count": sum(len(p["states"]) for p in pages), "blocked_request_count": 0,
             "skipped_element_count": len(st["skipped_elements"]), "skipped_url_count": len(st["skipped_urls"]), "error_count": len(st["errors"]),
-            "complete": complete, "method": "browser-use（URL で開く巡回・ページ内タブのみクリック）"}
+            "complete": complete, "method": "browser-use (opens pages by URL; clicks in-page tabs only)", "duplicate_count": len(st.get("duplicates", []))}
     json.dump({"meta": meta, "pages": pages}, open(os.path.join(OUT, "pages.json"), "w"), ensure_ascii=False, indent=1)
-    json.dump({"blocked_requests": [], "skipped_elements": st["skipped_elements"], "skipped_urls": st["skipped_urls"], "errors": st["errors"]},
+    json.dump({"blocked_requests": [], "skipped_elements": st["skipped_elements"], "skipped_urls": st["skipped_urls"], "errors": st["errors"],
+               "duplicates": st.get("duplicates", [])},
               open(os.path.join(OUT, "safety_report.json"), "w"), ensure_ascii=False, indent=1)
     open(os.path.join(OUT, "crawl.log"), "w").write("\n".join(st["log"]) + "\n")
 
@@ -220,7 +279,7 @@ def save():
     json.dump(st, open(SP, "w"), ensure_ascii=False)
 
 
-# 作業用のタブ（前回の続きなら同じタブ）
+# The working tab (the same one when resuming)
 tabs = {t["target_id"]: t for t in list_tabs()}
 if st.get("tab") and st["tab"] in tabs:
     switch_tab(st["tab"])
@@ -229,14 +288,14 @@ else:
     st["tab"] = current_tab()["target_id"]
 title_fix = re.compile(r"^\S*🐴\s*")
 
-# --retry-errors: 前回エラーで取れなかった画面を待ち行列の先頭に戻して取り直す（開いた記録からも外す）
+# --retry-errors: put the screens that failed last time back at the head of the queue (and forget that they were opened)
 if C.get("retry_errors") and st["errors"] and st.get("retried_run") != C.get("run_id"):
     for e in reversed(st["errors"]):
         seen.discard(key_of(e["url"]))
         st["queue"].insert(0, [e["url"], None, 1])
-    log(f"前回エラーになった {len(st['errors'])} 画面を取り直す")
+    log(f"retrying {len(st['errors'])} screens that failed last time")
     st["errors"] = []
-    st["retried_run"] = C.get("run_id")  # 30 画面ずつ分けて流すので、取り直しはコマンド 1 回につき 1 度だけにする
+    st["retried_run"] = C.get("run_id")  # the crawl runs in batches of 30 screens, so retry only once per command
 
 done = 0
 while st["queue"] and done < C["batch"] and len(st["pages"]) < C["max_pages"]:
@@ -249,7 +308,7 @@ while st["queue"] and done < C["batch"] and len(st["pages"]) < C["max_pages"]:
     try:
         goto_url(url)
         wait_for_load()
-        time.sleep(C["wait"])
+        settle()
         lost = session_lost(page_info()["url"])
         if lost:
             st["queue"].insert(0, [url, parent, depth])
@@ -259,7 +318,18 @@ while st["queue"] and done < C["batch"] and len(st["pages"]) < C["max_pages"]:
             if not st["pages"]:
                 finish("start_failed", lost)
             finish("session", lost)
-        d = json.loads(js("JSON.stringify(" + EXTRACT + ")"))  # 文字列で受け取る。要素が紛れ込むと CDP が Object reference chain is too long で落ち、原因も分からないため
+        # Receive it as a string: if an element slips in, CDP fails with "Object reference chain is too long" and hides the cause
+        d = json.loads(js("JSON.stringify(" + EXTRACT + ")"))
+        fp = fingerprint(d)
+        twin = st.setdefault("fingerprints", {}).get(fp)
+        if twin and C.get("dedupe", True):
+            # The same screen under a second URL (e.g. /admin/ and /admin/index.php): record it and move on
+            st.setdefault("duplicates", []).append({"url": url, "page_key": k, "duplicate_of": twin, "found_on": parent})
+            st["skipped_urls"].append({"page": parent or "", "href": url, "reason": f"Duplicate of {twin}"})
+            log(f"DUP {k} = {twin}")
+            save()
+            continue
+        st["fingerprints"][fp] = pid
         tiles = shot(os.path.join(OUT, "screenshots", f"{pid}.png"))
         cur = page_info()["url"]
         links = []
@@ -280,7 +350,7 @@ while st["queue"] and done < C["batch"] and len(st["pages"]) < C["max_pages"]:
         for i, b in enumerate(d["buttons"]):
             txt = (b["text"] or "").lower()
             hit = next((w for w in DENY_CLICK if w and w in txt), None)
-            reason = f"禁止キーワード: {hit}" if hit else ("ラベル無し" if not txt else "未クリック（URL で開く方式）")
+            reason = f"Blocked keyword: {hit}" if hit else ("No label" if not txt else "Not clicked (pages are opened by URL)")
             clickables.append({"index": i, **b, "clickable": False, "reason": reason})
             if hit:
                 st["skipped_elements"].append({"page": pid, "text": b["text"], "selector": b["id"], "reason": reason})
@@ -292,17 +362,17 @@ while st["queue"] and done < C["batch"] and len(st["pages"]) < C["max_pages"]:
                 sid = f"c{len([x for x in states if x['id'].startswith('c')]) + 1:02d}"
                 goto_url(url)
                 wait_for_load()
-                time.sleep(C["wait"])
+                settle()
                 ok = js("(()=>{const a=[...document.querySelectorAll('a[href]')].find(a=>a.offsetWidth && !a.getAttribute('onclick') && (a.getAttribute('href')||'').endsWith(%s)); if(!a) return false; a.click(); return true;})()" % json.dumps(t["hash"]))
                 if not ok:
                     continue
                 time.sleep(0.8)
                 more = shot(os.path.join(OUT, "screenshots", f"{pid}_{sid}.png"))
-                states.append({"id": sid, "label": f"タブ「{t['text']}」", "selector": f"a[href$='{t['hash']}']", "role": "tab", "result": "画面内変化",
+                states.append({"id": sid, "label": f'Tab "{t["text"]}"', "selector": f"a[href$='{t['hash']}']", "role": "tab", "result": "In-page change",
                                "screenshot": f"screenshots/{pid}_{sid}.png", "url_after": url.split("#")[0] + t["hash"], "modals": [], "changed": True})
                 for j, (rel, a, b) in enumerate(more):
-                    states.append({"id": f"{sid}_s{j + 2:02d}", "label": f"タブ「{t['text']}」の続き（{a}〜{b}px）", "selector": "", "role": "scroll",
-                                   "result": "縦長の画面の続き", "screenshot": rel, "url_after": "", "modals": [], "changed": False})
+                    states.append({"id": f"{sid}_s{j + 2:02d}", "label": f'Tab "{t["text"]}", continued ({a}–{b}px)', "selector": "", "role": "scroll",
+                                   "result": "Continuation of a tall screen", "screenshot": rel, "url_after": "", "modals": [], "changed": False})
         st["pages"].append({"id": pid, "url": cur, "norm_url": norm_of(url), "requested_url": url, "depth": depth, "parent": parent,
                             "title": title_fix.sub("", d["title"] or ""), "visited_at": now(), "screenshot": f"screenshots/{pid}.png", "page_key": k,
                             "headings": d["headings"], "forms": d["forms"], "looseFields": [], "tables": d["tables"], "nav": d["nav"],
@@ -321,6 +391,6 @@ complete = not st["queue"] or len(st["pages"]) >= C["max_pages"]
 write_outputs(complete)
 if complete:
     if len(st["pages"]) >= C["max_pages"] and st["queue"]:
-        finish("done", f"上限 {C['max_pages']} 画面に達した（未訪問 {len(st['queue'])} 件）")
-    finish("done", f"{len(st['pages'])} 画面")
-finish("more", f"{len(st['pages'])} 画面済み・未訪問 {len(st['queue'])} 件")
+        finish("done", f"reached the limit of {C['max_pages']} screens ({len(st['queue'])} not visited)")
+    finish("done", f"{len(st['pages'])} screens")
+finish("more", f"{len(st['pages'])} screens done, {len(st['queue'])} not visited")

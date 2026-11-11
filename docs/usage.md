@@ -1,55 +1,93 @@
-# 使い方の詳細
+# Usage in detail
 
-[← README に戻る](../README.md)
+[← Back to the README](../README.md) · [日本語](ja/usage.md)
 
-## コマンド
+## Commands
 
-| コマンド | すること |
+| Command | What it does |
 |---|---|
-| `app-spec-crawler` / `help` | 使い方を出す |
-| `app-spec-crawler doctor [--url URL]` | 今使えるかを表で出す。`--url` を付けると、そのアプリのタブが開いているかも見る |
-| `app-spec-crawler crawl --url URL --out DIR` | 巡回する（`DIR/pages.json` と `DIR/screenshots/`） |
-| `app-spec-crawler describe DIR` | 画面ごとの説明を書くための雛形 `DIR/descriptions.json` を作る |
-| `app-spec-crawler build DIR` | 画面仕様書 `DIR/book/` を作る |
-| `app-spec-crawler write DIR` | システム概要書 `DIR/book/guide.html` を書く（数分。`--budget` で費用の上限、既定 8 ドル） |
-| `app-spec-crawler verify DIR` | 文書を開いて幅 1440px / 390px で撮り、はみ出し・壊れた画像・書き漏れを確かめる（`DIR/verify/`） |
+| `app-spec-crawler` / `help` | Prints the usage |
+| `app-spec-crawler doctor [--url URL]` | Prints a table showing whether it can run now. With `--url` it also checks that a tab of that app is open |
+| `app-spec-crawler crawl --url URL --out DIR` | Crawls (`DIR/pages.json` and `DIR/screenshots/`) |
+| `app-spec-crawler describe DIR [--lang CODE]` | Creates `DIR/descriptions.json`, the template for the per-screen descriptions. `--lang` sets the language of the documents: `en`, `ja`, `zh`, `es` or `ko` |
+| `app-spec-crawler build DIR` | Builds the screen spec `DIR/book/` |
+| `app-spec-crawler write DIR` | Writes the system guide `DIR/book/guide.html` (a few minutes. `--budget` caps the cost; default 8 dollars) |
+| `app-spec-crawler verify DIR` | Opens the documents, captures them at widths 1440px / 390px, and checks for overflow, broken images and unfilled places (`DIR/verify/`) |
 
-ふつうは Claude に「〇〇を巡回して仕様書を作って」と頼めば、Claude がこの順に進めます。
+Normally you just ask Claude "crawl … and write a spec", and Claude goes through these in order.
 
-## crawl のオプション
+## Language of the documents
 
-| オプション | 意味 |
+- Claude writes the documents (the screen spec and the system guide) in the main language of your conversation.
+- Five languages are supported: `en` English, `ja` Japanese, `zh` Simplified Chinese, `es` Spanish, `ko` Korean. In any other language the documents are in English, and Claude tells you so.
+- The choice is made with `describe --lang CODE` and stored in `descriptions.json` as `_lang`. `build` and `write` follow it (both accept `--lang CODE` to override it for one run).
+- A project created before this rule existed has no `_lang` and is treated as Japanese.
+- The `confidence` value in `descriptions.json` is always `Verified`, `Inferred` or `To confirm`, in English. The book shows the label in the document language.
+- Labels of the target app's UI are quoted as they appear on screen. They are not translated.
+
+## Options of crawl
+
+| Option | Meaning |
 |---|---|
-| `--resume` | 途中で止まった巡回の続き。ログインし直して URL が変わっても続きから回る |
-| `--scope-prefix URL` | この文字列で始まる URL だけ回す（既定: 起点と同じオリジン） |
-| `--route-param NAME` | 画面を `?NAME=...` で切り替えるアプリで、その値を画面の住所として扱う |
-| `--variant-param NAME` | 別の画面として扱うクエリ（複数可） |
-| `--exclude REGEX` | 開かない URL（複数可） |
-| `--allow-route PATH` | 危険な言葉を含んでも開いてよい画面（複数可） |
-| `--hide SELECTOR` | 撮る前に隠す重なり（サイト内ヘルプ・チャット窓などの CSS セレクタ。複数可） |
-| `--max-pages N` | 上限の画面数（既定 300） |
-| `--max-depth N` / `--batch N` / `--wait 秒` | 深さの上限 / 1 回に回す画面数 / 画面を開いてから待つ時間 |
-| `--no-tabs` | ページ内タブもクリックしない |
+| `--resume` | Continue a crawl that stopped. It continues even if the URL changed after logging in again |
+| `--scope-prefix URL` | Crawl only URLs that start with this text (default: the same origin as the start URL) |
+| `--route-param NAME` | For an app that switches screens with `?NAME=...`: treat that value as the address of the screen |
+| `--variant-param NAME` | A query parameter that makes a separate screen (repeatable) |
+| `--keep-query` | Treat URLs with different query strings as separate screens |
+| `--no-id-collapse` | Do not treat `/items/1` and `/items/2` as the same screen |
+| `--exclude REGEX` | URLs not to open (repeatable) |
+| `--extra-deny WORD` | An extra word that marks a URL as dangerous (repeatable) |
+| `--allow-route PATH` | A screen that may be opened although its URL has a dangerous word, a token or an action parameter (repeatable) |
+| `--allow-token-urls` | Turn off the token and action-parameter rule entirely. **Dangerous.** Test systems only, and only when you explicitly ask for it |
+| `--hide SELECTOR` | An overlay to hide before capturing (CSS selector of in-site help, a chat widget, etc.; repeatable) |
+| `--max-pages N` | Maximum number of screens (default 300) |
+| `--max-depth N` / `--batch N` | Maximum link depth (default 10) / screens per run (default 30) |
+| `--wait SECONDS` | Minimum wait after a page opens (default 1) |
+| `--settle-max SECONDS` | Longest wait for a page to finish rendering (default 8) |
+| `--no-dedupe` | Do not merge screens whose content is identical |
+| `--no-tabs` | Do not click in-page tabs either |
+| `--session-text REGEX` | Extra text that means the login has expired (repeatable) |
+| `--retry-errors` | Retry the screens that failed last time (use with `--resume`) |
+| `--relogin COMMAND` / `--relogin-max N` / `--relogin-timeout SECONDS` | A command to run when the login expires (exit code 0 = logged in again) / how many times at most (default 3) / how long to wait for it (default 180) |
 
-## エラーのとき
+### When a screen is captured
 
-失敗すると「✖ エラー / 原因 / 直し方」の 3 段で出ます。直し方にパッケージのインストールなどが含まれるとき、Claude は承認をもらってから実行します。
+A screen is captured after it has finished rendering. The crawler waits until the page stops changing: at least `--wait` seconds, at most `--settle-max` seconds. If screenshots show spinners or empty frames, raise `--settle-max`.
 
-| 終了コード | 意味 |
+### Duplicate screens
+
+A screen whose content is identical to one already captured is recorded as a duplicate and not added to the book. `--no-dedupe` turns this off.
+
+### URLs the crawler refuses to open
+
+Some apps change data on a plain GET link (in WordPress, "Trash" and "Activate" are links). By default the crawler does not open:
+
+- a URL containing a dangerous word (`logout`, `delete`, `approve`, `export` …);
+- a URL carrying a state-changing token — a query parameter such as `_wpnonce`, `csrf_token`, `authenticity_token`, `sesskey`;
+- a URL with an action parameter (`action=`, `do=`, `op=`, `cmd=`, `task=`) whose value is not a known read-only one (`edit`, `view`, `show`, `list`, `search` …).
+
+Skipped URLs are listed in `DIR/safety_report.json` with the reason. Re-admit a specific screen with `--allow-route PATH`.
+
+## When there is an error
+
+A failure is printed in three parts: "✖ error / cause / fix". When the fix includes installing a package or the like, Claude asks for your approval before doing it.
+
+| Exit code | Meaning |
 |---|---|
-| 0 | 成功 |
-| 1 | その他 |
-| 2 | 使い方の誤り |
-| 3 | ログイン切れ（ログインし直して `--resume`） |
-| 4 | Chrome につながらない |
-| 5 | 必要なものが入っていない |
-| 6 | 見た目の確認で問題あり |
-| 7 | 画面仕様書の生成に失敗 |
-| 8 | システム概要書の書き出しに失敗 |
+| 0 | Success |
+| 1 | Other |
+| 2 | Wrong usage |
+| 3 | Login expired (log in again, then `--resume`) |
+| 4 | Cannot connect to Chrome |
+| 5 | A requirement is not installed |
+| 6 | The visual check found a problem |
+| 7 | Building the screen spec failed |
+| 8 | Writing the system guide failed |
 
-## 注意
+## Cautions
 
-- **できるのは「見える範囲」の仕様です。** スクリーンショットと画面の構造から読み取った推定を含みます。「推定」「要確認」の項目は、原本の設計書や開発者に確かめてください。
-- **スクリーンショットには実データが写ります。** 顧客名・従業員名などが写るので、できた文書の共有先・保存先に気を付けてください。
-- **`write` は Claude の利用料がかかります**（`claude -p` を 1 回呼ぶ。`--budget` で上限を決められる）。
-- ログインの有効期限が短いアプリでは途中で切れることがあります。ログインし直して `--resume` で続きから回せます。
+- **The spec covers only what is visible.** It includes inferences read from screenshots and screen structure. Check items marked "Inferred" or "To confirm" against the original design documents or with the developers.
+- **Screenshots show real data.** Customer names, employee names and the like appear in them, so take care where you share and store the documents.
+- **Opening a page can itself change something in some apps.** WordPress, for example, creates an auto-draft every time "Add Post" loads. The crawler cannot detect this. If you know such a screen, tell Claude so it is excluded with `--exclude`.
+- **`write` costs Claude usage** (it calls `claude -p` once; `--budget` sets the cap).
+- In an app with a short login lifetime the login may expire midway. Log in again and continue with `--resume`.
