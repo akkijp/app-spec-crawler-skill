@@ -19,6 +19,14 @@
 
 `app-spec-crawler doctor` がこれらを 1 つずつ確かめ、足りないものは「何に要るか」と「直し方」を出します。
 
+## 1 行で入れる
+
+```bash
+npx skills add akkijp/app-spec-crawler-skill
+```
+
+スキルのフォルダが Claude Code のスキルに写されます。`app-spec-crawler` というコマンドは PATH には入りません。Claude は、スキルのフォルダの中の `bin/app-spec-crawler` を使います。足りないものは、Claude Code に doctor を実行させると分かります。
+
 ## 手で入れる
 
 ```bash

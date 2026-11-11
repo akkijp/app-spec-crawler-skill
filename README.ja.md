@@ -56,7 +56,13 @@ https://github.com/user-attachments/assets/0f28552f-e581-4f41-b838-a610962fed5f
 
 ## <img src="docs/readme/ui/icon-install.png" width="32" height="32" align="absmiddle" alt="" /> インストール
 
-Claude Code に次の文を貼ってください。Claude が入れて、使えるかどうかまで確かめます。
+```bash
+npx skills add akkijp/app-spec-crawler-skill
+```
+
+これで、スキルが Claude Code のスキルのフォルダに入ります。そのあと Claude Code に「app-spec-crawler の doctor を実行して」と頼むと、ほかに何が要るかが分かります。
+
+または、Claude Code に次の文を貼ってください。Claude が git で入れ、コマンドを使えるようにして、動くかどうかまで確かめます。
 
 ```text
 Claude Code のスキル app-spec-crawler をインストールしてください。

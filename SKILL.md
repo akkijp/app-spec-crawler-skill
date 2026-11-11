@@ -19,6 +19,8 @@ Survey every page and every "safe interaction state" (modals, tabs, menus, expan
 Last, a readable **`guide.html`, written by Fable 5.1 through `claude -p`** from the content of the four layers, is added (what you can do, map of the screens, workflows, rules, terms, things to confirm) and linked from the cover and the top bar.
 Pages are **light-theme only** (they stay light when the OS is dark; no `prefers-color-scheme` is written).
 
+**Where the command is.** The commands below are written as `app-spec-crawler …`. If that name is not on the PATH (for example when the skill was installed with `npx skills add`, which only copies this folder), run `bin/app-spec-crawler` inside this skill's own folder instead — the folder that contains this SKILL.md. Everything else is the same.
+
 The parts of the output that should be deterministic (same input → same output) are done by programs.
 The AI's (your) job is limited to reading what each screen means and writing the descriptions.
 

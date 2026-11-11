@@ -56,7 +56,13 @@ Details: [how the safety rules work](docs/how-it-works.md), [the full policy](re
 
 ## <img src="docs/readme/ui/icon-install.png" width="32" height="32" align="absmiddle" alt="" /> Install
 
-Paste this into Claude Code. Claude installs the skill and checks that it can run.
+```bash
+npx skills add akkijp/app-spec-crawler-skill
+```
+
+That copies the skill into your Claude Code skills folder. Then ask Claude Code to `run the app-spec-crawler doctor`, and it tells you what else is needed.
+
+Or paste this into Claude Code. Claude installs the skill with git, puts the command on your PATH, and checks that it can run.
 
 ```text
 Install the Claude Code skill app-spec-crawler.

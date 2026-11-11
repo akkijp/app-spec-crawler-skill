@@ -19,6 +19,14 @@
 
 `app-spec-crawler doctor` checks these one by one. For anything missing it prints what it is needed for and how to fix it.
 
+## One line
+
+```bash
+npx skills add akkijp/app-spec-crawler-skill
+```
+
+This copies the skill folder into your Claude Code skills. It does not put the `app-spec-crawler` command on your PATH; Claude runs `bin/app-spec-crawler` from the skill's folder instead. Ask Claude Code to run the doctor to see what else is needed.
+
 ## Manual install
 
 ```bash
