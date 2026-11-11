@@ -1,14 +1,12 @@
-
-
-https://github.com/user-attachments/assets/0f28552f-e581-4f41-b838-a610962fed5f
-
 # app-spec-crawler
 
 **Point Claude Code at any web app you're logged into. Get the spec — every screen, with screenshots. Read-only.**
 
 [日本語](README.ja.md)
 
-<p align="center"><img src="assets/hero.png" alt="app-spec-crawler walks the screens of a web app, captures each one, and turns them into a browsable spec" width="100%"></p>
+https://github.com/user-attachments/assets/0f28552f-e581-4f41-b838-a610962fed5f
+
+<sub>Recorded on an earlier run of the WordPress sample (51 screens, 381 spec items). With sound.</sub>
 
 I inherited an admin panel with no documentation. This [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill walks every screen in your own logged-in Chrome, takes a full-page screenshot of each, and has Claude write the documents you wish had come with the system.
 

@@ -4,7 +4,9 @@
 
 [English](README.md)
 
-<p align="center"><img src="assets/hero.png" alt="Web アプリの画面を巡回して撮り、仕様書にまとめる app-spec-crawler のイメージ" width="100%"></p>
+https://github.com/user-attachments/assets/0f28552f-e581-4f41-b838-a610962fed5f
+
+<sub>WordPress の見本を前に回したときの記録です（51 画面・仕様 381 項目）。音が出ます。</sub>
 
 設計書の無い管理画面を引き継いだのが、作ったきっかけです。この [Claude Code](https://docs.anthropic.com/en/docs/claude-code) スキルは、あなたのログイン済みの Chrome で全画面をめぐり、1 画面ずつ全体を撮って、Claude が文書を書きます。
 
