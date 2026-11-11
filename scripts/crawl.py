@@ -2,23 +2,23 @@
 """
 app-spec-crawler / crawl.py
 ---------------------------
-ログイン済みブラウザプロファイル（または起動中のChromeへのCDP接続）を使い、
-指定URL配下のWebアプリケーションを読み取り専用で巡回し、
-全ページ・全「安全なクリック状態」のスクリーンショットと構造情報 (pages.json) を出力する。
+Optional Playwright crawler. Uses a logged-in browser profile (or a CDP connection to a running Chrome)
+to crawl a web application under a given URL in read-only mode, and writes screenshots of every page
+and every "safe click state" together with the structure data (pages.json).
 
-絶対原則: アプリケーションのデータを一切変更しない。
-  1. ネットワーク層: GET/HEAD/OPTIONS 以外のHTTPリクエストを全て遮断（既定）
-  2. 要素層:        保存/削除/送信 等のキーワードを含む要素・submit系要素は絶対にクリックしない
-  3. 入力層:        フォームに文字を入力しない、ファイルを選択しない
-  4. ダイアログ層:  confirm/prompt/beforeunload は全て dismiss（=キャンセル）
-  5. 遷移層:        logout/delete 等を含むURLには遷移しない
+Absolute rule: never change any data of the application.
+  1. Network:   every HTTP request other than GET/HEAD/OPTIONS is blocked (default)
+  2. Elements:  elements with keywords such as save/delete/send, and submit-type elements, are never clicked
+  3. Input:     nothing is typed into forms and no file is selected
+  4. Dialogs:   confirm/prompt/beforeunload are all dismissed (= cancelled)
+  5. Navigation: URLs that contain logout/delete and the like are not opened
 
-使い方（例）:
+Usage (examples):
   python crawl.py --url https://app.example.com/ --profile "/Users/me/Library/Application Support/Google/Chrome" \
       --profile-directory "Profile 1" --out ./out
-  python crawl.py --url https://app.example.com/ --cdp http://localhost:9222 --out ./out   # 起動中Chromeに接続
-  python crawl.py --url ... --storage-state state.json --out ./out                          # Playwright保存状態
-  オプション: --headless で非表示実行（既定は表示）
+  python crawl.py --url https://app.example.com/ --cdp http://localhost:9222 --out ./out   # attach to a running Chrome
+  python crawl.py --url ... --storage-state state.json --out ./out                          # saved Playwright state
+  Option: --headless runs without a window (default: the window is shown)
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ from urllib.parse import urljoin, urlparse, urlunparse
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 except ImportError:  # pragma: no cover
-    print("playwright が見つかりません: pip install playwright && playwright install chromium", file=sys.stderr)
+    print("playwright was not found: pip install playwright && playwright install chromium", file=sys.stderr)
     sys.exit(2)
 
 HERE = Path(__file__).resolve().parent
@@ -46,52 +46,52 @@ SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
 # ----------------------------------------------------------------------------
-# 引数
+# Arguments
 # ----------------------------------------------------------------------------
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="読み取り専用 Webアプリ巡回・スクリーンショット収集")
-    p.add_argument("--url", required=True, help="巡回の起点URL")
-    p.add_argument("--out", default="./out", help="出力ディレクトリ")
+    p = argparse.ArgumentParser(description="Read-only web app crawl and screenshot collection")
+    p.add_argument("--url", required=True, help="start URL of the crawl")
+    p.add_argument("--out", default="./out", help="output directory")
 
-    g = p.add_argument_group("ブラウザ/認証（いずれか1つ）")
-    g.add_argument("--profile", help="ブラウザのユーザーデータディレクトリ（Chrome/Edge/Chromium）。※そのプロファイルでブラウザを起動中だと使えないのでコピーを指定するのが確実")
-    g.add_argument("--profile-directory", default=None, help="--profile 内のプロファイル名（例: 'Default', 'Profile 1'）")
-    g.add_argument("--cdp", help="起動中ブラウザのCDPエンドポイント（例: http://localhost:9222）。chrome --remote-debugging-port=9222 で起動しておく")
-    g.add_argument("--storage-state", help="Playwright の storage_state JSON")
-    g.add_argument("--channel", default=None, help="chrome / msedge / chromium（既定: profile指定時はchrome、それ以外はchromium）")
+    g = p.add_argument_group("Browser / authentication (choose one)")
+    g.add_argument("--profile", help="browser user data directory (Chrome/Edge/Chromium). It cannot be used while a browser is running on that profile, so passing a copy is the safe way")
+    g.add_argument("--profile-directory", default=None, help="profile name inside --profile (examples: 'Default', 'Profile 1')")
+    g.add_argument("--cdp", help="CDP endpoint of a running browser (example: http://localhost:9222). Start it with chrome --remote-debugging-port=9222")
+    g.add_argument("--storage-state", help="Playwright storage_state JSON")
+    g.add_argument("--channel", default=None, help="chrome / msedge / chromium (default: chrome with --profile, otherwise chromium)")
 
-    s = p.add_argument_group("巡回範囲")
-    s.add_argument("--scope-prefix", action="append", default=[], help="このURLプレフィックス配下のみ巡回（複数可）。未指定なら起点URLと同一オリジン全体")
-    s.add_argument("--exclude", action="append", default=[], help="除外URL正規表現（複数可）")
+    s = p.add_argument_group("Crawl scope")
+    s.add_argument("--scope-prefix", action="append", default=[], help="crawl only under this URL prefix (repeatable). Default: the whole origin of the start URL")
+    s.add_argument("--exclude", action="append", default=[], help="regular expression of URLs to exclude (repeatable)")
     s.add_argument("--max-pages", type=int, default=300)
     s.add_argument("--max-depth", type=int, default=10)
-    s.add_argument("--keep-query", action="store_true", help="クエリ文字列を区別して別ページ扱いにする（既定: 無視）")
-    s.add_argument("--id-collapse", action="store_true", help="/users/123 のような数値IDセグメントを同一視し、代表1件のみ巡回する")
+    s.add_argument("--keep-query", action="store_true", help="treat different query strings as separate pages (default: ignored)")
+    s.add_argument("--id-collapse", action="store_true", help="treat numeric ID segments such as /users/123 as the same page and crawl one representative only")
 
-    c = p.add_argument_group("クリック探索")
-    c.add_argument("--click-mode", choices=["safe", "none"], default="safe", help="safe: 安全判定を通った要素のみクリック / none: クリックしない")
+    c = p.add_argument_group("Click exploration")
+    c.add_argument("--click-mode", choices=["safe", "none"], default="safe", help="safe: click only elements that pass the safety check / none: click nothing")
     c.add_argument("--max-clicks-per-page", type=int, default=40)
-    c.add_argument("--click-allow-pattern", help="この正規表現にマッチするテキストの要素のみクリック対象にする（さらに絞る）")
+    c.add_argument("--click-allow-pattern", help="click only elements whose text matches this regular expression (narrows further)")
 
-    d = p.add_argument_group("表示・待機")
-    d.add_argument("--headless", action="store_true", help="ヘッドレス実行（既定は画面表示）")
+    d = p.add_argument_group("Display and waiting")
+    d.add_argument("--headless", action="store_true", help="run headless (default: the window is shown)")
     d.add_argument("--viewport", default="1440x900")
-    d.add_argument("--wait", type=int, default=1200, help="遷移/クリック後の追加待機 ms")
-    d.add_argument("--timeout", type=int, default=20000, help="ナビゲーションタイムアウト ms")
+    d.add_argument("--wait", type=int, default=1200, help="extra wait after a navigation or click, in ms")
+    d.add_argument("--timeout", type=int, default=20000, help="navigation timeout in ms")
     d.add_argument("--full-page", action="store_true", default=True)
     d.add_argument("--no-full-page", dest="full_page", action="store_false")
-    d.add_argument("--save-html", action="store_true", help="各ページのDOM(HTML)も保存する")
+    d.add_argument("--save-html", action="store_true", help="also save the DOM (HTML) of every page")
 
-    x = p.add_argument_group("危険オプション（通常は使わない）")
-    x.add_argument("--allow-mutations", action="store_true", help="GET以外のリクエストを遮断しない。顧客環境では絶対に使わないこと")
-    x.add_argument("--allow-post-pattern", action="append", default=[], help="この正規表現にマッチするURLへのPOSTのみ許可（GraphQLの読み取り等）。mutationが混ざる恐れがあるため慎重に")
+    x = p.add_argument_group("Dangerous options (normally not used)")
+    x.add_argument("--allow-mutations", action="store_true", help="do not block requests other than GET. Never use this on a customer environment")
+    x.add_argument("--allow-post-pattern", action="append", default=[], help="allow POST only to URLs that match this regular expression (GraphQL reads and the like). Be careful: mutations can slip in")
 
-    p.add_argument("--rules", default=str(HERE / "safety_rules.json"), help="安全判定ルールJSON")
+    p.add_argument("--rules", default=str(HERE / "safety_rules.json"), help="safety rules JSON")
     return p.parse_args()
 
 
 # ----------------------------------------------------------------------------
-# ユーティリティ
+# Utilities
 # ----------------------------------------------------------------------------
 def load_rules(path: str) -> dict:
     with open(path, encoding="utf-8") as f:
@@ -129,7 +129,7 @@ def now_iso() -> str:
 
 
 # ----------------------------------------------------------------------------
-# ページ内情報抽出（ブラウザ側で実行するJS）
+# Extracting information from a page (JS that runs in the browser)
 # ----------------------------------------------------------------------------
 EXTRACT_JS = r"""
 (clickableSelector) => {
@@ -141,7 +141,7 @@ EXTRACT_JS = r"""
   const txt = (el) => (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 120);
   const attr = (el, a) => el.getAttribute(a) || '';
   const cssPath = (el) => {
-    // 安定しやすいセレクタ: id > data-testid > 階層パス
+    // Selectors that tend to stay stable: id > data-testid > path through the tree
     if (el.id) return '#' + CSS.escape(el.id);
     const tid = attr(el, 'data-testid'); if (tid) return `[data-testid="${tid}"]`;
     const parts = [];
@@ -173,7 +173,7 @@ EXTRACT_JS = r"""
       disabled: el.disabled, readonly: el.readOnly
     }))
   }));
-  // フォーム外の入力要素
+  // Input elements outside any form
   const looseFields = Array.from(document.querySelectorAll('input,select,textarea')).filter(el => !el.closest('form') && vis(el)).map(el => ({
     tag: el.tagName.toLowerCase(), type: attr(el, 'type') || 'text', name: attr(el, 'name'), id: el.id, placeholder: attr(el, 'placeholder'),
     label: (el.labels && el.labels[0]) ? txt(el.labels[0]) : (attr(el,'aria-label') || '')
@@ -203,7 +203,7 @@ EXTRACT_JS = r"""
 
 
 # ----------------------------------------------------------------------------
-# 本体
+# Main part
 # ----------------------------------------------------------------------------
 class Crawler:
     def __init__(self, args: argparse.Namespace):
@@ -233,14 +233,14 @@ class Crawler:
         self.log_path = self.out / "crawl.log"
         self._log_fh = open(self.log_path, "a", encoding="utf-8")
 
-    # -- ログ ---------------------------------------------------------------
+    # -- Log ---------------------------------------------------------------
     def log(self, msg: str) -> None:
         line = f"[{now_iso()}] {msg}"
         print(line, flush=True)
         self._log_fh.write(line + "\n")
         self._log_fh.flush()
 
-    # -- 安全判定 -------------------------------------------------------------
+    # -- Safety checks -------------------------------------------------------------
     def url_in_scope(self, url: str) -> bool:
         if not url.startswith(("http://", "https://")):
             return False
@@ -255,30 +255,30 @@ class Crawler:
         return contains_any(url.lower(), self.rules.get("deny_url_keywords", []))
 
     def element_click_verdict(self, el: dict) -> tuple[bool, str]:
-        """(クリックしてよいか, 理由)"""
+        """Returns (may it be clicked, reason)."""
         if el.get("disabled"):
             return False, "disabled"
         if (el.get("type") or "").lower() in {"submit", "reset", "image"}:
-            return False, "submit/reset 要素"
+            return False, "submit/reset element"
         if el.get("tag") in {"input"}:
-            return False, "input 要素"
+            return False, "input element"
         hay = text_key(el.get("text"), el.get("ariaLabel"), el.get("title"), el.get("name"), el.get("id"),
                        el.get("className"), el.get("value"), el.get("href"))
         hit = contains_any(hay, self.rules.get("deny_click_keywords", []))
         if hit:
-            return False, f"禁止キーワード: {hit}"
+            return False, f"Blocked keyword: {hit}"
         if el.get("inForm") and el.get("tag") == "button" and not (el.get("type") or "").lower() == "button":
-            # form 内で type 未指定の button は submit 扱いになる
-            return False, "form内のtype未指定button(=submit)"
+            # a button inside a form with no type attribute acts as submit
+            return False, "button without a type inside a form (= submit)"
         if self.click_allow and not self.click_allow.search(hay):
-            return False, "click-allow-pattern 不一致"
+            return False, "does not match click-allow-pattern"
         label = (el.get("text") or el.get("ariaLabel") or el.get("title") or "").strip()
         if not label and not el.get("id") and not el.get("ariaLabel"):
-            # ラベルのないアイコンボタンは何をするか判別不能 → 既定では押さない
-            return False, "ラベルなし要素（用途不明）"
+            # an icon button without a label: there is no way to tell what it does, so it is not clicked by default
+            return False, "No label (purpose unclear)"
         return True, "ok"
 
-    # -- ネットワーク遮断 -----------------------------------------------------
+    # -- Blocking network requests -----------------------------------------------------
     def install_request_guard(self, context) -> None:
         def handler(route, request):
             m = request.method.upper()
@@ -300,14 +300,14 @@ class Crawler:
                 pass
         page.on("dialog", on_dialog)
 
-    # -- ブラウザ起動 ---------------------------------------------------------
+    # -- Launching the browser ---------------------------------------------------------
     def launch(self, pw):
         a = self.args
         w, h = (int(x) for x in a.viewport.lower().split("x"))
         if a.cdp:
             browser = pw.chromium.connect_over_cdp(a.cdp)
             context = browser.contexts[0] if browser.contexts else browser.new_context(viewport={"width": w, "height": h})
-            self.log(f"CDP接続: {a.cdp} (contexts={len(browser.contexts)})")
+            self.log(f"CDP connection: {a.cdp} (contexts={len(browser.contexts)})")
             return browser, context, True
         if a.profile:
             launch_args = ["--disable-blink-features=AutomationControlled"]
@@ -317,14 +317,14 @@ class Crawler:
                 a.profile, channel=a.channel or "chrome", headless=a.headless,
                 viewport={"width": w, "height": h}, args=launch_args, accept_downloads=False,
             )
-            self.log(f"プロファイル起動: {a.profile} / {a.profile_directory or 'Default'} headless={a.headless}")
+            self.log(f"Launched with profile: {a.profile} / {a.profile_directory or 'Default'} headless={a.headless}")
             return None, context, False
         browser = pw.chromium.launch(channel=a.channel, headless=a.headless)
         context = browser.new_context(viewport={"width": w, "height": h}, storage_state=a.storage_state, accept_downloads=False)
-        self.log(f"新規コンテキスト起動 storage_state={a.storage_state} headless={a.headless}")
+        self.log(f"Launched a new context storage_state={a.storage_state} headless={a.headless}")
         return browser, context, False
 
-    # -- 巡回 -----------------------------------------------------------------
+    # -- Crawl -----------------------------------------------------------------
     def run(self) -> None:
         self.current_url = self.args.url
         with sync_playwright() as pw:
@@ -344,15 +344,15 @@ class Crawler:
                     url, depth, parent = self.queue.popleft()
                     try:
                         self.visit(page, url, depth, parent, seen)
-                    except Exception as e:  # ページ単位で続行
+                    except Exception as e:  # keep going page by page
                         self.errors.append({"url": url, "error": repr(e), "trace": traceback.format_exc()[-1500:]})
                         self.log(f"ERROR {url}: {e!r}")
-                    self.write_outputs()  # 途中結果を逐次保存
+                    self.write_outputs()  # save the partial result as we go
             finally:
                 self.write_outputs(final=True)
                 try:
                     if attached:
-                        page.close()  # 利用者のブラウザは閉じない
+                        page.close()  # never close the user's own browser
                     else:
                         context.close()
                         if browser:
@@ -405,10 +405,10 @@ class Crawler:
         self.pages[final_norm] = rec
         self.order.append(final_norm)
 
-        # --- リンク収集 → キュー
+        # --- collect links → queue
         self.enqueue_links(info.get("links", []), final_url, depth, pid, seen, rec)
 
-        # --- クリック探索
+        # --- click exploration
         if self.args.click_mode == "safe":
             self.explore_clicks(page, rec, info, depth, seen)
 
@@ -423,7 +423,7 @@ class Crawler:
             if entry["internal"]:
                 danger = self.url_is_dangerous(href)
                 if danger:
-                    entry["skipped"] = f"危険URLキーワード: {danger}"
+                    entry["skipped"] = f"Risky URL keyword: {danger}"
                     if not any(s["page"] == pid and s["href"] == href for s in self.skipped_urls):
                         self.skipped_urls.append({"page": pid, "href": href, "reason": entry["skipped"]})
                 else:
@@ -456,11 +456,11 @@ class Crawler:
             label = (el.get("text") or el.get("ariaLabel") or el.get("title") or el.get("id") or "")[:80]
             state = {"id": sid, "label": label, "selector": el.get("selector"), "role": el.get("role") or el.get("tag"), "result": None}
             try:
-                # 毎回ページを再読込して初期状態から1クリックだけ行う（状態の混入を防ぎ、結果を決定的にする）
+                # reload the page every time and make exactly one click from the initial state (no leftover state, deterministic result)
                 self.goto(page, page_url)
                 loc = page.locator(el["selector"]).first
                 if loc.count() == 0 or not loc.is_visible():
-                    state["result"] = "要素が見つからない/非表示"
+                    state["result"] = "Element not found or hidden"
                     rec["states"].append(state)
                     continue
                 loc.scroll_into_view_if_needed(timeout=3000)
@@ -474,25 +474,25 @@ class Crawler:
                 state["url_after"] = after_url
                 state["modals"] = after.get("modals", [])
                 state["headings_after"] = after.get("headings", [])[:10]
-                # 変化判定はDOMの内容（本文・見出し・モーダル）で行う。画像比較だとフォーカス枠だけでも差が出るため
+                # a change is detected from the DOM content (body text, headings, modals); comparing images would differ on a focus ring alone
                 state["changed"] = dom_signature(after) != before_sig
                 if norm_url(after_url, self.args.keep_query, self.args.id_collapse) != rec["norm_url"]:
-                    state["result"] = "ページ遷移"
+                    state["result"] = "Page navigation"
                     if self.url_in_scope(after_url) and not self.url_is_dangerous(after_url):
                         n = norm_url(after_url, self.args.keep_query, self.args.id_collapse)
                         if n not in seen:
                             seen.add(n)
                             self.queue.append((after_url, depth + 1, rec["id"]))
                 elif state["modals"]:
-                    state["result"] = "モーダル/ダイアログ表示"
+                    state["result"] = "Modal/dialog shown"
                     self.enqueue_links(after.get("links", []), after_url, depth, rec["id"], seen, rec)
                 elif state["changed"]:
-                    state["result"] = "画面内変化（展開/タブ/メニュー等）"
+                    state["result"] = "In-page change (expanded section, tab, menu and so on)"
                     self.enqueue_links(after.get("links", []), after_url, depth, rec["id"], seen, rec)
                 else:
-                    state["result"] = "変化なし"
+                    state["result"] = "No change"
             except Exception as e:
-                state["result"] = f"エラー: {e!r}"[:200]
+                state["result"] = f"Error: {e!r}"[:200]
                 self.log(f"  click error {label!r}: {e!r}")
             rec["states"].append(state)
             self.log(f"  {sid} {label!r} -> {state['result']}")
@@ -513,7 +513,7 @@ class Crawler:
             except Exception:
                 continue
 
-    # -- 出力 -----------------------------------------------------------------
+    # -- Output -----------------------------------------------------------------
     def write_outputs(self, final: bool = False) -> None:
         data = {
             "meta": {
@@ -548,15 +548,15 @@ def file_hash(p: Path) -> str:
 def main() -> None:
     args = parse_args()
     if not (args.profile or args.cdp or args.storage_state):
-        print("警告: --profile / --cdp / --storage-state のいずれも未指定。未ログイン状態で巡回します。", file=sys.stderr)
+        print("Warning: none of --profile / --cdp / --storage-state was given. The crawl runs without a login.", file=sys.stderr)
     if args.allow_mutations:
-        print("!!! --allow-mutations が指定されています。データ変更リクエストが遮断されません。顧客環境では絶対に使用しないでください !!!", file=sys.stderr)
+        print("!!! --allow-mutations is set. Requests that change data are NOT blocked. Never use this on a customer environment !!!", file=sys.stderr)
         time.sleep(3)
     c = Crawler(args)
-    c.log(f"開始 url={args.url} out={c.out}")
+    c.log(f"start url={args.url} out={c.out}")
     c.run()
-    c.log(f"完了 pages={len(c.pages)} blocked={len(c.blocked_requests)} skipped_elements={len(c.skipped_elements)} errors={len(c.errors)}")
-    print(f"\n出力: {c.out}/pages.json, {c.out}/screenshots/, {c.out}/safety_report.json")
+    c.log(f"done pages={len(c.pages)} blocked={len(c.blocked_requests)} skipped_elements={len(c.skipped_elements)} errors={len(c.errors)}")
+    print(f"\nOutput: {c.out}/pages.json, {c.out}/screenshots/, {c.out}/safety_report.json")
 
 
 if __name__ == "__main__":

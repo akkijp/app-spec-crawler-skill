@@ -1,44 +1,67 @@
-# 安全ポリシー（読み取り専用巡回）
+# Safety policy (read-only crawl)
 
-対象は顧客が業務で使っている本番システムである前提で動く。
-「データが1件でも変わる」「通知が1通でも飛ぶ」「セッションが切れる」ことは、利用者とその顧客への実害になる。
-網羅性より安全が優先。迷ったら押さない・進まない。
+Work on the assumption that the target is a production system the customer uses for their business.
+"Even one record changes", "even one notification goes out" or "the session is cut" is real harm to the user and to their customer.
+Safety comes before coverage. When in doubt, do not press and do not proceed.
 
-## 禁止事項（明確な禁止）
-1. 保存 / 登録 / 更新 / 送信 / 確定 / 決定 / 適用 / 反映 / 実行 / 削除 / 破棄 / 承認 / 却下 / 公開 / 投稿 / 発行 / 購入 / 支払 / 注文 / 申込 / 契約 / 解約 / 退会 / 招待 / インポート / アップロード / 同期 / リセット / 初期化 / 有効化・無効化 / アーカイブ / 復元 / ログアウト 等、およびそれらの英語表現を含むボタン・リンク・メニューを押さない。
-2. フォームに値を入力・選択・変更しない（検索欄も含む。チェックボックス・トグル・ドラッグ&ドロップも変更操作とみなす）。
-3. ファイル選択・アップロード・ダウンロードを行わない。
-4. 確認ダイアログ（confirm / prompt / beforeunload / アプリ独自モーダルの「OK」「はい」）には常に「キャンセル」「いいえ」で応える。
-5. `logout` `delete` `destroy` `remove` `revoke` `approve` `publish` `export` `download` `run` `execute` 等を含む URL に遷移しない。
-6. 外部サイト（別オリジン）に遷移しない。
-7. 管理者向けの一括操作・バッチ実行・メール送信・通知送信画面は、画面を開くところまで。
-8. `--allow-mutations` の使用。検証用の自社環境で、利用者が明示的に求めた場合以外は使わない。
+## Prohibitions (hard rules)
+1. Do not press any button, link or menu item containing save / register / update / send / submit / confirm / decide / apply / reflect / run / delete / discard / approve / reject / publish / post / issue / purchase / pay / order / sign up / contract / cancel a contract / withdraw / invite / import / upload / sync / reset / initialize / enable or disable / archive / restore / log out and the like — in any language. In a Japanese UI these are words such as 「保存」「登録」「更新」「送信」「確定」「削除」「承認」「公開」「ログアウト」.
+2. Do not enter, select or change a value in a form (search boxes included; checkboxes, toggles and drag & drop also count as changes).
+3. Do not choose, upload or download files.
+4. Always answer confirmation dialogs (confirm / prompt / beforeunload / "OK" or "Yes" in the app's own modal) with "Cancel" or "No".
+5. Do not navigate to a URL containing `logout` `delete` `destroy` `remove` `revoke` `approve` `publish` `export` `download` `run` `execute` and the like.
+6. Do not navigate to a URL that carries a state-changing token or a non-read-only action parameter (see "Protections of the browser-use crawl", rule 3).
+7. Do not navigate to an external site (another origin).
+8. For administrator bulk operations, batch runs, email sending and notification sending screens: go only as far as opening the screen.
+9. Do not use `--allow-mutations` or `--allow-token-urls`, except on your own test environment when the user explicitly asks for it.
 
-## crawl.py の5層防護（プログラムで強制）
-| 層 | 内容 | 実装 |
+## Protections of the browser-use crawl (`app-spec-crawler crawl`, the default)
+The crawl opens screens by URL (GET) and nothing else. On top of that:
+
+1. **No input, no submit.** The code contains nothing that types into a field, selects a value, chooses a file or submits a form.
+2. **Dangerous URL keywords.** A URL whose path or query contains a keyword in `deny_url_keywords` of `scripts/safety_rules.json` (`logout`, `delete`, `approve`, `export`, `download` …) is not opened.
+3. **State-changing tokens and action parameters.** Some apps change data on a plain GET link — in WordPress, "Trash" and "Activate" are ordinary links. So by default the crawler refuses to open:
+   - any URL that carries a state-changing token: a query parameter such as `_wpnonce`, `csrf_token`, `authenticity_token`, `sesskey`;
+   - any URL with an action parameter (`action=`, `do=`, `op=`, `cmd=`, `task=`) whose value is not a known read-only one (`edit`, `view`, `show`, `list`, `search` …).
+4. **Scope.** A URL outside the scope (another origin, or outside `--scope-prefix`) is not opened.
+5. **Clicks.** The only click is on an in-page tab pointing at `#name` on the current page, which sends nothing to the server (`--no-tabs` turns it off). Buttons are recorded, not pressed.
+6. **Login.** When the login has expired the crawl stops (exit code 3) instead of capturing or operating the login screen.
+7. **The user's tabs.** The crawl works in one tab of its own and does not touch the tabs the user has open.
+
+Every URL that was not opened is listed in `safety_report.json` under `skipped_urls`, with the reason.
+
+Exceptions, and when they are allowed:
+- `--allow-route PATH` re-admits one specific screen. Use it only after looking at what the URL is and confirming with the user that it only displays something.
+- `--allow-token-urls` disables rule 3 entirely. It is dangerous: a single link carrying a nonce can delete or activate something. Use it only when the user explicitly asks for it on a test system. Never on a customer's production system.
+
+**What these protections cannot do.** An app can change something merely because a page was opened, with no token and no action parameter in the URL. WordPress, for example, creates an auto-draft every time the "Add Post" screen loads. The crawler cannot know this. Exclude such screens with `--exclude` when they are known, and ask the user about them before crawling.
+
+## Five layers of protection in crawl.py (enforced by the program)
+| Layer | What it does | Implementation |
 |---|---|---|
-| ネットワーク | GET / HEAD / OPTIONS 以外の HTTP リクエストを全て遮断しログに残す | `context.route("**/*")` で `abort` |
-| 要素 | 禁止キーワード、`type=submit/reset`、form 内の type 未指定 button、ラベル無し要素はクリックしない | `element_click_verdict()` |
-| 入力 | 入力系 API を一切呼ばない（`fill` / `type` / `select_option` / `set_input_files` は使っていない） | コード上に存在しない |
-| ダイアログ | `page.on("dialog")` で全て `dismiss()`（= キャンセル） | `install_dialog_guard()` |
-| 遷移 | 危険キーワードを含む URL・スコープ外 URL はキューに入れない | `url_is_dangerous()` / `url_in_scope()` |
+| Network | Blocks every HTTP request other than GET / HEAD / OPTIONS and logs it | `abort` in `context.route("**/*")` |
+| Element | Does not click forbidden keywords, `type=submit/reset`, a button with no type inside a form, or an element with no label | `element_click_verdict()` |
+| Input | Never calls an input API (`fill` / `type` / `select_option` / `set_input_files` are not used) | Does not exist in the code |
+| Dialog | `dismiss()` (= cancel) on everything via `page.on("dialog")` | `install_dialog_guard()` |
+| Navigation | URLs containing a dangerous keyword and out-of-scope URLs are not queued | `url_is_dangerous()` / `url_in_scope()` |
 
-さらに、各クリックは**毎回ページを再読込した初期状態から1回だけ**行う。状態が混ざらず、結果が決定的になり、
-「前のクリックで開いたモーダルの中の保存ボタンを次のクリックで押してしまう」事故を構造的に防ぐ。
+In addition, each click is made **exactly once, from the initial state after reloading the page every time**. States do not mix, results are deterministic, and
+the accident of "the next click presses the Save button inside the modal the previous click opened" is prevented by construction.
 
-ネットワーク層が最後の砦である。万一要素判定をすり抜けて保存ボタンを押しても、POST/PUT/PATCH/DELETE はサーバーに届かない。
-ただし **GET で副作用を起こす行儀の悪いアプリ**（`?action=delete` 等）には効かないため、URL キーワード判定を併用している。
-`safety_rules.json` の `deny_url_keywords` に、対象アプリ固有の危険パスを事前に追加すること。
+The network layer is the last line of defense. Even if a Save button slips past the element check and is pressed, POST/PUT/PATCH/DELETE never reach the server.
+But it does **nothing against a badly behaved app that causes side effects on GET** (`?action=delete` etc.), which is why the URL keyword check is used alongside it.
+Add the target app's own dangerous paths to `deny_url_keywords` in `safety_rules.json` beforehand.
 
-## 手動（AI操作）巡回時の追加ルール
-- クリック前に、要素のラベル・aria-label・周辺の文脈を読んで「表示系か変更系か」を判定し、変更系なら押さない。判定をログ（`pages.json` の `clickables[].reason`）に残す。
-- アイコンだけでラベルの無いボタンは押さない（用途不明）。
-- モーダルを開いたら、閉じる手段は「×」「閉じる」「Esc」「モーダル外クリック」のみ。「OK」「保存」「適用」で閉じない。
-- タブ・アコーディオン・ドロップダウンの展開は可。ただし展開先に変更系ボタンがあっても押さない。
-- 「次へ」「もっと見る」等のページネーションは可（表示系）。
-- 画面遷移したら、遷移先が危険 URL でないことを確認してから続ける。
-- 1ページの操作が終わったら必ず初期状態（再読込）に戻してから次の要素に進む。
+## Additional rules for a manual (AI-operated) crawl
+- Before clicking, read the element's label, aria-label and surrounding context and decide whether it displays or changes something. If it changes something, do not press. Leave the decision in the log (`clickables[].reason` in `pages.json`).
+- Do not press a button that has only an icon and no label (purpose unknown).
+- After opening a modal, the only ways to close it are "×", "Close", Esc, or a click outside the modal. Do not close it with "OK", "Save" or "Apply".
+- Expanding tabs, accordions and dropdowns is allowed. But do not press a state-changing button that appears inside.
+- Pagination such as "Next" and "Show more" is allowed (display only).
+- Before following a link, apply the same URL rules as the crawler: no dangerous keyword, no state-changing token, no non-read-only action parameter.
+- After a navigation, confirm that the destination is not a dangerous URL before continuing.
+- When the work on one page is done, always return to the initial state (reload) before moving to the next element.
 
-## 事故が起きたと思ったら
-直ちに操作を止め、何を押したか・どの URL か・時刻を `crawl.log`（または手動ログ）に書き、利用者に報告する。
-隠さない。復旧操作（元に戻すための更新）も自分では行わない。
+## If you think an accident happened
+Stop operating immediately. Write what you pressed, at which URL and at what time into `crawl.log` (or the manual log), and report to the user.
+Do not hide it. Do not attempt recovery yourself either (an update to put things back is still an update).

@@ -1,6 +1,7 @@
-# browser-use の中で実行する、画面仕様書の見た目の確認（app_spec_crawler.py verify から呼ばれる。直接は使わない）。
-# 代表のページを 幅 1440/390 で撮り、横のはみ出し・読めない画像・ライト固定（OS をダークにしても背景が明るいまま）を確かめる。
-# 最後に 1 行 "ASC_VERIFY=<json>" を出す。
+# The visual check of the screen spec. It runs inside browser-use (called by "app_spec_crawler.py verify"; not used directly).
+# It takes screenshots of representative pages at widths 1440 and 390, and checks for horizontal overflow, images that
+# fail to load, and the fixed light theme (the background must stay light even when the OS is in dark mode).
+# At the end it prints one line: "ASC_VERIFY=<json>".
 import json
 import os
 import time
@@ -15,7 +16,7 @@ if os.path.exists(os.path.join(BOOK, "guide.html")):
 for sub, name in (("sections", "section"), ("pages", "page"), ("captures", "capture")):
     files = sorted(f for f in os.listdir(os.path.join(BOOK, sub)) if f.endswith(".html")) if os.path.isdir(os.path.join(BOOK, sub)) else []
     if files:
-        # 中身の多いもの（ファイルが大きいもの）を代表にする
+        # Use the page with the most content (the largest file) as the representative
         files.sort(key=lambda f: -os.path.getsize(os.path.join(BOOK, sub, f)))
         targets.append((name, f"{sub}/{files[0]}"))
 
@@ -23,7 +24,7 @@ new_tab("about:blank")
 tab = current_tab()["target_id"]
 problems, shots = [], []
 try:
-    # OS がダークのときでもライトのままかを見るため、ダークを真似た状態で撮る
+    # Emulate dark mode while taking the screenshots, to see that the pages stay light when the OS is dark
     cdp("Emulation.setEmulatedMedia", features=[{"name": "prefers-color-scheme", "value": "dark"}])
     for w, h, mobile in ((1440, 900, False), (390, 844, True)):
         cdp("Emulation.setDeviceMetricsOverride", width=w, height=h, deviceScaleFactor=1, mobile=mobile)
@@ -35,11 +36,11 @@ try:
             broken = js("[...document.querySelectorAll('img')].filter(i=>i.complete && i.naturalWidth===0).map(i=>i.getAttribute('src'))") or []
             bg = js("(getComputedStyle(document.body).backgroundColor.match(/\\d+/g)||[255,255,255]).slice(0,3).map(Number)")
             if sw > w + 1:
-                problems.append(f"{rel}（幅 {w}px）: 横に {sw - w}px はみ出している")
+                problems.append(f"{rel} (width {w}px): overflows horizontally by {sw - w}px")
             if broken and not mobile:
-                problems.append(f"{rel}: 読み込めない画像 {len(broken)} 枚（例: {broken[0]}）")
+                problems.append(f"{rel}: {len(broken)} image(s) failed to load (example: {broken[0]})")
             if not mobile and sum(bg) / 3 < 200:
-                problems.append(f"{rel}: OS がダークのとき背景が暗くなる（rgb{tuple(bg)}）。ライト固定にする")
+                problems.append(f"{rel}: the background turns dark when the OS is in dark mode (rgb{tuple(bg)}). Keep the light theme fixed")
             path = os.path.join(SHOTS, f"{name}_{w}.png")
             capture_screenshot(path)
             shots.append(path)

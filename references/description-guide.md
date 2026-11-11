@@ -1,98 +1,111 @@
-# descriptions.json 記入ガイド
+# Writing descriptions.json
 
-`build_book.py --init-descriptions` で生成される `descriptions.json` を埋める。
-これが仕様書の本文になる。読者は「このアプリを初めて触る開発者・引き継ぎ担当者」と想定する。
+**Language rule.** Write every value in the language given by `descriptions.json["_lang"]` (`en` English, `ja` Japanese, `zh` Simplified Chinese, `es` Spanish, `ko` Korean; a file with no `_lang` is Japanese).
+These stay exactly as specified, in every language:
+- the JSON keys;
+- the `evidence` ids (`init`, `c02`, `s02` …) and screen ids (`pXXX`);
+- the three `confidence` values: `Verified`, `Inferred`, `To confirm` (the book translates the label).
 
-## 原則
-- **スクリーンショットを見てから書く。** `pages.json` のテキストだけで書くと、レイアウト・強調・空状態・バッジ等の情報が抜ける。
-- **事実と推定を分ける。** 見えたものは断定、挙動の推測は「〜と推定」「〜と思われる」、確認できないことは `open_questions` へ。押していないボタンの挙動は必ず推定扱い。
-- **「何があるか」だけでなく「なぜあるか・いつ使うか」を書く。** ボタンの羅列は自動抽出データが担う。説明は業務文脈を補う。
-- **具体的に。** 「一覧画面」ではなく「顧客を会社名・担当者・ステータスで検索し、詳細へ遷移する一覧画面。1ページ20件、作成日降順と推定」。
-- 日本語で書く（アプリが英語UIでもラベルは原文のまま引用し、説明は日本語）。
-- 画面の `name` は UI 上の見出し・メニュー名を優先し、無ければ URL から命名する。`category` は左メニューやURLの第1階層から揃える（目次のグルーピングに使う）。
+Quote UI labels of the target app exactly as they appear on screen. Never translate them.
+The examples below are in English; write the same kind of content in the document language.
 
-## 3階層の仕様項目（specs）— ブックの本体
-仕様は「文章による説明」ではなく、**1行1仕様の項目**として書く。ブックでは番号付きの表になり、根拠キャプチャにリンクされる。
+Fill in the `descriptions.json` that `app-spec-crawler describe DIR --lang <code>` generates.
+It becomes the body of the spec. The reader is a developer, or a person taking over the system, who has never used the app.
+
+## Principles
+- **Look at the screenshot before you write.** Text from `pages.json` alone loses layout, emphasis, empty states, badges and the like.
+- **Separate fact from inference.** State what you saw as fact. Mark guesses about behavior as inferred ("probably", "appears to"). Put what you cannot confirm into `open_questions`. The behavior of a button that was not pressed is always an inference.
+- **Say why it exists and when it is used, not only what is there.** The auto-extracted data already lists the buttons. The description adds the business context.
+- **Be specific.** Not "a list screen" but "a list for finding customers by company name, contact and status, leading to the detail screen; 20 rows per page, probably sorted by creation date, newest first".
+- Write in the document language. When the app's UI is in another language, quote the labels as they are and write the explanation in the document language.
+- For a screen's `name`, prefer the heading or menu label in the UI; if there is none, name it from the URL. Keep `category` consistent with the side menu or the first URL segment (it groups the table of contents).
+- Do not copy personal data visible in the screenshots (names, email addresses, employee numbers) into the text.
+
+## Spec items (`specs`) at three levels — the core of the book
+Write a spec as **one item per line**, not as a paragraph of explanation. In the book the items become a numbered table, each linked to the capture that supports it.
 
 ```json
-{"type": "操作", "statement": "「絞り込み」を押すと条件入力のドロップダウンが開く", "condition": "常時", "evidence": "c02", "confidence": "確認済", "notes": ""}
-{"type": "権限", "statement": "「新規作成」ボタンは管理者ロールにのみ表示される", "condition": "ロール=管理者", "evidence": "init", "confidence": "推定", "notes": "一般ユーザー画面は未取得"}
+{"type": "Action", "statement": "Pressing \"Filter\" opens a dropdown for entering conditions", "condition": "Always", "evidence": "c02", "confidence": "Verified", "notes": ""}
+{"type": "Permission", "statement": "The \"Add New\" button is shown only to the administrator role", "condition": "Role = administrator", "evidence": "init", "confidence": "Inferred", "notes": "Screens for ordinary users were not captured"}
 ```
-| フィールド | 内容 |
+| Field | Content |
 |---|---|
-| type | 表示 / 操作 / 入力 / 遷移 / 権限 / 表示条件 / 業務ルール / 一覧・検索 / 非機能 など。語彙を揃える |
-| statement | 「〜すると〜が表示される」「〜は〜である」の形。1文1仕様。主語を省かない |
-| condition | 成立条件（いつ・誰に・どの状態で）。常時なら「常時」 |
-| evidence | 根拠のキャプチャ。初期表示は `init`、操作状態は `c02` 等。押していない・見えていないなら空 |
-| confidence | 確認済（キャプチャで見えた）/ 推定（文脈からの推測）/ 要確認（推測も難しい） |
-| id | 省略可。省略すると `SPEC-p003-01` のように自動採番される。手で振るなら全体で一意に |
+| type | Display / Action / Input / Navigation / Permission / Visibility / Business rule / List & search / Non-functional, etc. (use the equivalents in the document language). Keep the vocabulary consistent |
+| statement | In the form "doing X shows Y" or "X is Y". One sentence, one spec. Do not drop the subject |
+| condition | When it holds (when, for whom, in which state). If unconditional, "Always" |
+| evidence | The capture that supports it: `init` for the initial view, `c02` etc. for an interaction state. Empty if it was not pressed or not visible |
+| confidence | Exactly one of `Verified` (seen in a capture) / `Inferred` (guessed from context) / `To confirm` (hard even to guess) |
+| id | Optional. If omitted, numbered automatically, like `SPEC-p003-01`. If you assign one by hand, keep it unique across the whole file |
 
-**どの階層に書くか**: その画面だけの仕様は `pages[pXXX].specs`。同じ階層の複数画面に共通する仕様（例: 顧客配下の全画面にパンくずがある、
-ID付きURLは存在しない顧客だと404）は `sections[path].common_specs`。アプリ全体（認証、共通ヘッダ、言語、権限モデル）は `app.specs`。
-下位に書いた仕様を上位に持ち上げたら、下位からは消す（重複させない）。
+**Which level**: a spec for that screen alone goes in `pages[pXXX].specs`. A spec shared by several screens in the same section (e.g. every screen under a customer has a breadcrumb;
+a URL with an ID returns 404 for a customer that does not exist) goes in `sections[path].common_specs`. App-wide matters (authentication, the common header, language, the permission model) go in `app.specs`.
+When you lift a spec from a lower level to a higher one, remove it from the lower one (do not duplicate).
 
-## sections（階層）
-雛形に URL ディレクトリごとのキーが入っている（`/`, `/customers`, `/customers/{id}` …）。`_children` と `_pages` は参考（配下の子階層と直下画面）。
-| キー | 書くこと |
+## sections
+The template has one key per URL directory (`/`, `/customers`, `/customers/{id}` …). `_children` and `_pages` are for reference (child sections and the screens directly under the section).
+| Key | What to write |
 |---|---|
-| name | 階層名。左メニューの名称に合わせる（例: 顧客管理）。未記入なら index 画面名か末尾パスが使われる |
-| summary | この階層が何の画面群か（1〜2文） |
-| purpose | 業務上の役割 |
-| contains | 含まれる画面と役割分担（一覧 → 詳細 → 詳細内タブ → 子リソース一覧 … のように階層の読み方を書く） |
-| common_specs | 階層共通の仕様項目 |
-| navigation | 階層内の遷移パターン（一覧→詳細、詳細→編集モーダル、戻り導線） |
-| access | 権限・表示条件（この階層自体が誰に見えるか） |
-| open_questions | 不明点 |
+| name | Section name. Match the label in the side menu (e.g. Customer management). If empty, the index screen's name or the last path segment is used |
+| summary | What this group of screens is (1–2 sentences) |
+| purpose | Its role in the business |
+| contains | The screens included and how they divide the work (say how to read the section: list → detail → tabs in the detail → list of child resources …) |
+| common_specs | Spec items shared across the section |
+| navigation | Navigation patterns within the section (list → detail, detail → edit modal, the way back) |
+| access | Permissions and display conditions (who can see this section at all) |
+| open_questions | What is unclear |
 
-深い階層（`/a/{id}/b/{id}/c`）では、各レベルに「その階層が親に対して何を表すか」（顧客の注文、注文の明細…）を書き、親子関係を明示する。
+For deep sections (`/a/{id}/b/{id}/c`), write at each level what that section represents relative to its parent (a customer's orders, an order's line items …) and make the parent-child relation explicit.
 
-## app（全体）
-| キー | 書くこと |
+## app
+| Key | What to write |
 |---|---|
-| name | アプリ名（ヘッダのロゴ・タイトルから） |
-| overview | 何のシステムか、主要な業務領域、画面群の全体構成（3〜8文） |
-| target_users | 利用者の種別（管理者・一般・顧客など）と、画面から読み取れる権限差 |
-| auth_and_roles | ログイン方式、ロール切替、権限によって出し分けられている箇所 |
-| global_navigation | ヘッダ・サイドメニューの構成と、各メニューが対応する画面ID |
-| common_ui | 共通コンポーネント（検索バー、ページネーション、通知、ヘルプ、言語切替等）と共通の振る舞い |
-| specs | アプリ全体の仕様項目 |
-| business_domain | 扱う業務・主要エンティティとその関係（顧客 1—N 注文 …） |
-| non_functional | 観察できた非機能（レスポンシブ、多言語、ブラウザ、ローディング表示 等） |
-| open_questions / notes | 全体に関わる不明点・特記事項 |
+| name | The app's name (from the header logo or title) |
+| overview | What the system is, its main business areas, how the screens are organized overall (3–8 sentences). The first sentence is shown on the cover, so make it stand alone |
+| target_users | Kinds of users (administrator, ordinary user, customer, etc.) and the permission differences you can read from the screens |
+| auth_and_roles | How login works, role switching, what is shown or hidden by permission |
+| global_navigation | The structure of the header and side menu, and the screen ID each menu item corresponds to |
+| common_ui | Shared components (search bar, pagination, notifications, help, language switch, etc.) and shared behavior |
+| specs | App-wide spec items |
+| business_domain | The business handled, the main entities and their relations (customer 1—N orders …) |
+| non_functional | Non-functional aspects you could observe (responsive layout, multiple languages, browsers, loading indicators, etc.) |
+| open_questions / notes | Unknowns and remarks that concern the whole app |
 
-## pages.pXXX（各画面）
-| キー | 書くこと | 例 |
+## pages.pXXX (each screen)
+| Key | What to write | Example |
 |---|---|---|
-| name | 画面名 | 顧客一覧 |
-| category | 機能分類 | 顧客管理 |
-| summary | 1〜2文 | 登録済み顧客を検索・絞り込みし、詳細画面へ遷移するための一覧。 |
-| purpose | 業務上の目的・位置づけ | 営業担当が担当顧客を探す起点。ダッシュボードの「顧客」メニューから遷移。 |
-| display_conditions | 表示される条件・されない条件 | ログイン済みの全ロールに表示。顧客0件時は「顧客がいません」の空状態（c03で確認）。「新規作成」ボタンは管理者のみと推定（一般ユーザーのスクショでは非表示）。 |
-| users_and_usage | 想定利用者と使い方 | 営業担当が日次で担当顧客を確認。管理者はステータス一括変更に使うと推定。 |
-| specs | **この画面の仕様項目（本体）** | 上記「3階層の仕様項目」参照 |
-| features | 主要機能 | ["会社名・担当者のキーワード検索", "ステータス絞り込み（有効/休眠/解約）", "作成日・更新日でのソート", "CSVエクスポート（未検証）"] |
-| ui_elements | 要素ごとの挙動 | {"element":"ステータスタブ","behavior":"クリックで一覧を絞り込む（c02で確認）","notes":"件数バッジ付き"} |
-| inputs | 入力項目 | {"field":"キーワード","type":"text","required":"任意","validation_assumption":"部分一致、空ならフィルタ無し","notes":"placeholder「会社名・担当者名」"} |
-| flows | 利用フロー | ["メニュー「顧客」をクリック", "キーワードを入力して検索", "行をクリックして詳細へ"] |
-| transitions | 遷移 | {"trigger":"行の会社名リンク","to":"p007 顧客詳細","notes":"/customers/{id}"} |
-| states_and_variants | バリエーション | 空状態、ローディング、エラー表示、権限差、レスポンシブ時の違い |
-| business_rules | 推定ルール | 「解約」ステータスの顧客は編集不可と推定（編集ボタンがグレーアウト）。 |
-| open_questions | 不明点 | ["CSVエクスポートの出力項目", "ページサイズの変更可否"] |
-| states.cNN | 操作状態 | {"description":"絞り込み条件のドロップダウン。ステータス・担当者・期間で絞れる","when_shown":"「絞り込み」ボタン押下時","notes":"適用ボタンは押していない"} |
+| name | Screen name | Customer list |
+| category | Feature category | Customer management |
+| summary | 1–2 sentences | A list for searching and filtering registered customers and moving to the detail screen. |
+| purpose | Business purpose and where it sits | The starting point for a sales rep looking for their customers. Reached from the "Customers" menu on the dashboard. |
+| display_conditions | When it is shown and when it is not | Shown to every logged-in role. With 0 customers, an empty state "No customers" (verified in c03). The "Add New" button is probably for administrators only (not shown in the ordinary user's screenshot). |
+| users_and_usage | Intended users and how they use it | Sales reps check their customers daily. Administrators probably use it to change statuses in bulk. |
+| specs | **This screen's spec items (the core)** | See "Spec items at three levels" above |
+| features | Main features | ["Keyword search by company name and contact", "Filter by status (active / dormant / cancelled)", "Sort by creation date and update date", "CSV export (not verified)"] |
+| ui_elements | Behavior per element | {"element":"Status tabs","behavior":"Clicking filters the list (verified in c02)","notes":"With a count badge"} |
+| inputs | Input fields | {"field":"Keyword","type":"text","required":"Optional","validation_assumption":"Partial match; no filter when empty","notes":"placeholder \"Company or contact name\""} |
+| flows | Usage flow | ["Click \"Customers\" in the menu", "Enter a keyword and search", "Click a row to open the detail"] |
+| transitions | Navigation | {"trigger":"Company name link in a row","to":"p007 Customer detail","notes":"/customers/{id}"} |
+| states_and_variants | Variations | Empty state, loading, error display, permission differences, differences in responsive layout |
+| business_rules | Inferred rules | A customer with the status "Cancelled" probably cannot be edited (the edit button is greyed out). |
+| open_questions | What is unclear | ["Which fields the CSV export outputs", "Whether the page size can be changed"] |
+| states.cNN | Interaction state | {"description":"Dropdown of filter conditions. Can filter by status, person in charge and period","when_shown":"When the \"Filter\" button is pressed","notes":"The Apply button was not pressed"} |
 
-`states` の各 `cNN` は `pages.json` の `states[].id` と一致させる。`result` が「変化なし」の状態も、
-「クリックしても変化が無かった（非活性か、権限不足と推定）」のように一言残す。`_label` `_result` `_url` `_title` は参考用で、ブックには出ない。
+Each `cNN` under `states` must match `states[].id` in `pages.json`. For a state whose `result` is "no change", still leave one line,
+such as "Clicking produced no change (probably disabled, or insufficient permission)". `_label` `_result` `_url` `_title` are for reference and do not appear in the book.
 
-## 品質チェック（記入後に自分で確認）
-- [ ] 全画面に `specs` が1件以上あり、全階層に `summary` と `contains` がある
-- [ ] 全ページに `summary` と `display_conditions` がある
-- [ ] 全操作状態 `cNN` に `description` がある
-- [ ] 押していないボタンの挙動を断定していない
-- [ ] 遷移先は画面ID（pXXX）で参照している
-- [ ] 不明点を推測で埋めていない（`open_questions` に残している）
-- [ ] 同じカテゴリ名の表記ゆれがない（「顧客管理」と「顧客」が混在しない）
+## Quality check (verify yourself after filling in)
+- [ ] Every screen has at least one item in `specs`; every section has `summary` and `contains`
+- [ ] Every page has `summary` and `display_conditions`
+- [ ] Every interaction state `cNN` has a `description`
+- [ ] No behavior of an unpressed button is stated as fact
+- [ ] Navigation targets are referenced by screen ID (pXXX)
+- [ ] Unknowns are not filled in by guessing (they are left in `open_questions`)
+- [ ] The same category is always spelled the same way (no mix of "Customer management" and "Customers")
+- [ ] `confidence` is always exactly `Verified`, `Inferred` or `To confirm`
+- [ ] Every value is in the language of `_lang`; UI labels are quoted as on screen
+- [ ] No personal data from the screenshots (names, email addresses) is copied into the text
 
-## 大量ページの分担
-50 画面を超える場合はカテゴリごとにサブエージェントに分担させる。各エージェントには
-(1) 担当ページIDの一覧、(2) `pages.json` の該当部分、(3) スクリーンショットのパス、(4) このガイド を渡し、
-担当分の `pages` オブジェクトだけを返させて親がマージする。`app` は親が全体を見て書く。
+## Splitting the work for many pages
+Above 50 screens, split the work across subagents by category. Give each agent
+(1) the list of page IDs it owns, (2) the matching part of `pages.json`, (3) the screenshot paths, (4) this guide, and the document language (`_lang`),
+and have it return only the `pages` object for its share; the parent merges. The parent writes `app` after looking at the whole.

@@ -2,20 +2,23 @@
 """
 app-spec-crawler / build_book.py
 --------------------------------
-crawl.py の出力 (pages.json + screenshots/) と、AIが記入した descriptions.json を合成し、
-4種類の文書からなる「画面仕様書」を生成する。標準ライブラリのみ使用・決定的（同じ入力→同じ出力）。
+Combines the crawler output (pages.json + screenshots/) with the AI-written descriptions.json and builds a
+"screen spec" book made of four kinds of documents. Standard library only, and deterministic (same input -> same output).
 
   book/
-  ├── index.html                 目次ハブ（アプリ共通の仕様サマリ・階層ツリー・画面一覧・キャプチャ一覧）
-  ├── overview.html              アプリ共通の仕様（アプリ全体の仕様項目・共通仕様・認証/権限・ナビゲーション）
-  ├── sections/<path>.html       階層（ディレクトリ）仕様: その階層に含まれる画面群と共通仕様（深い階層はネスト）
-  ├── pages/pXXX.html            画面仕様: 番号付き仕様項目（SPEC-pXXX-NN）＋説明
-  ├── captures/pXXX.html         画面キャプチャ: 初期表示＋操作状態のスクリーンショット集（仕様項目の根拠）
-  ├── screenshots/               画像
+  ├── index.html                 Hub: app-wide summary, section tree, screen list, capture list
+  ├── overview.html              App-wide spec: app-level spec items, shared specs, auth / permissions, navigation
+  ├── sections/<path>.html       Section (directory) spec: the screens in that section and what they share (nested for deep paths)
+  ├── pages/pXXX.html            Screen spec: numbered spec items (SPEC-pXXX-NN) plus descriptions
+  ├── captures/pXXX.html         Screen captures: the initial view and each interaction state (evidence for the spec items)
+  ├── screenshots/               Images
   └── assets/book.css
 
-  python build_book.py --crawl ./out --init-descriptions   # 記入用テンプレート descriptions.json を生成（階層・画面を自動列挙）
-  python build_book.py --crawl ./out --out ./out/book      # ブック生成
+  python build_book.py --crawl ./out --init-descriptions   # write the descriptions.json template (lists sections and screens)
+  python build_book.py --crawl ./out --out ./out/book      # build the book
+  python build_book.py --crawl ./out --lang es             # language of the book: en / ja / zh / es / ko
+
+UI strings are English in this file and go through i18n.t(); translations live in scripts/locales/<lang>.json.
 """
 from __future__ import annotations
 
@@ -32,45 +35,75 @@ from urllib.parse import urlparse
 HERE = Path(__file__).resolve().parent
 ASSETS = HERE.parent / "assets"
 
+import sys
+sys.path.insert(0, str(HERE))
+import i18n  # noqa: E402
+from i18n import t  # noqa: E402
+
+LANG = i18n.DEFAULT  # set in main()
+
+
+def tr(text: str, **kw) -> str:
+    """UI string in the language of the book. `text` is the English source."""
+    return t(LANG, text, **kw)
+
+
+def ld(s):
+    """Fixed crawler phrase (state label / result, reason, method) in the language of the book."""
+    return i18n.localize_data(LANG, s)
+
+
+def is_navigation(st: dict) -> bool:
+    """True when a state's result is a page navigation (canonical English or legacy Japanese value)."""
+    return i18n.localize_data("en", st.get("result")) == "Page navigation"
+
+
+def screens(n: int) -> str:
+    return tr("1 screen") if n == 1 else tr("{n} screens", n=n)
+
+
+def emit(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8")
+
 # ---------------------------------------------------------------------------
-# descriptions.json テンプレート
+# descriptions.json template
 # ---------------------------------------------------------------------------
 SPEC_ITEM = OrderedDict([
-    ("id", ""),            # 省略時は自動採番 SPEC-pXXX-NN / SPEC-SEC-NN / SPEC-APP-NN
-    ("type", ""),          # 表示 / 操作 / 入力 / 遷移 / 権限 / 業務ルール / 表示条件 / 非機能 など
-    ("statement", ""),     # 仕様文（「〜する」「〜が表示される」）
-    ("condition", ""),     # 成立条件（いつ・誰に）
-    ("evidence", ""),      # 根拠: 初期表示なら "init"、操作状態なら "c02" のように状態ID。未検証なら空
-    ("confidence", ""),    # 確認済 / 推定 / 要確認
+    ("id", ""),            # auto-numbered when empty: SPEC-pXXX-NN / SPEC-SEC-NN / SPEC-APP-NN
+    ("type", ""),          # display / action / input / navigation / permission / business rule / visibility / non-functional ...
+    ("statement", ""),     # the spec statement ("... is shown", "... does ...")
+    ("condition", ""),     # when it holds (when, for whom)
+    ("evidence", ""),      # "init" for the initial view, a state id such as "c02" for an interaction state; empty if not verified
+    ("confidence", ""),    # verified / inferred / to_confirm (the localized labels are accepted too)
     ("notes", ""),
 ])
 
 PAGE_TEMPLATE = OrderedDict([
     ("name", ""), ("category", ""), ("summary", ""), ("purpose", ""),
     ("display_conditions", ""), ("users_and_usage", ""),
-    ("specs", []),                 # ← この画面の仕様項目（SPEC_ITEM の配列）。画面仕様書の本体
+    ("specs", []),                 # spec items of this screen (list of SPEC_ITEM): the core of the screen spec
     ("features", []), ("ui_elements", []), ("inputs", []), ("flows", []), ("transitions", []),
     ("states_and_variants", ""), ("business_rules", ""), ("open_questions", []),
-    ("states", {}),                # クリック状態ごとの説明 {"c01": {"description","when_shown","notes"}}
+    ("states", {}),                # description per interaction state {"c01": {"description","when_shown","notes"}}
 ])
 
 SECTION_TEMPLATE = OrderedDict([
-    ("name", ""),                  # 階層名（例: 顧客管理）
-    ("summary", ""),               # この階層が何の画面群か
-    ("purpose", ""),               # 業務上の役割
-    ("contains", ""),              # 含まれる画面と役割分担の説明（一覧→詳細→サブ画面 など）
-    ("common_specs", []),          # この階層の全画面に共通する仕様項目（SPEC_ITEM）
-    ("navigation", ""),            # 階層内の遷移パターン
-    ("access", ""),                # 権限・表示条件
+    ("name", ""),                  # section name (e.g. Customers)
+    ("summary", ""),               # what this group of screens is
+    ("purpose", ""),               # its role in the business
+    ("contains", ""),              # the screens it contains and how they divide the work (list -> detail -> sub-screens ...)
+    ("common_specs", []),          # spec items shared by every screen in this section (SPEC_ITEM)
+    ("navigation", ""),            # navigation patterns within the section
+    ("access", ""),                # permissions and visibility
     ("open_questions", []),
 ])
 
 APP_TEMPLATE = OrderedDict([
     ("name", ""), ("overview", ""), ("target_users", ""), ("auth_and_roles", ""),
     ("global_navigation", ""), ("common_ui", ""),
-    ("specs", []),                 # アプリ全体に関わる仕様項目（SPEC_ITEM）
-    ("business_domain", ""),       # 業務ドメインの説明（扱うデータ・主要エンティティ）
-    ("non_functional", ""),        # 非機能（レスポンシブ、言語、ブラウザ等で観察できたもの）
+    ("specs", []),                 # app-wide spec items (SPEC_ITEM)
+    ("business_domain", ""),       # business domain (the data handled, main entities)
+    ("non_functional", ""),        # non-functional aspects that could be observed (responsive layout, languages, browsers ...)
     ("open_questions", []), ("notes", ""),
 ])
 
@@ -88,7 +121,7 @@ def clone(o):
 
 
 # ---------------------------------------------------------------------------
-# 階層ツリー
+# Section tree
 # ---------------------------------------------------------------------------
 def path_of(pg: dict) -> str:
     p = urlparse(pg["norm_url"]).path or "/"
@@ -96,15 +129,15 @@ def path_of(pg: dict) -> str:
 
 
 def section_key(path: str) -> str:
-    """セクションのファイル名キー。'/' → 'root', '/a/b' → 'a__b'"""
+    """File-name key of a section. '/' -> 'root', '/a/b' -> 'a__b'"""
     if path == "/":
         return "root"
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", path.strip("/").replace("/", "__"))
 
 
 def build_tree(pages: list[dict]) -> dict[str, dict]:
-    """全ページのパスから階層ノードを作る。ノード = 配下にページを持つディレクトリ。
-    返り値: {path: {"path","parent","children":[path...],"pages":[pg...],"index_page":pg|None,"depth"}}"""
+    """Build section nodes from the paths of all pages. A node is a directory that has pages under it.
+    Returns: {path: {"path","parent","children":[path...],"pages":[pg...],"index_page":pg|None,"depth"}}"""
     nodes: dict[str, dict] = {}
 
     def ensure(path: str) -> dict:
@@ -120,7 +153,7 @@ def build_tree(pages: list[dict]) -> dict[str, dict]:
 
     ensure("/")
     paths = {path_of(pg) for pg in pages}
-    # ディレクトリ = 自分以外のページのプレフィックスになっているパス
+    # a directory = a path that is a prefix of some other page
     for pg in pages:
         p = path_of(pg)
         is_dir = p == "/" or any(q != p and q.startswith(p + "/") for q in paths)
@@ -145,7 +178,7 @@ def descendant_pages(nodes: dict, path: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# テンプレート生成
+# Template generation
 # ---------------------------------------------------------------------------
 def init_descriptions(crawl: dict, out_path: Path, existing: dict | None) -> None:
     desc = existing or {}
@@ -174,10 +207,10 @@ def init_descriptions(crawl: dict, out_path: Path, existing: dict | None) -> Non
 
 
 # ---------------------------------------------------------------------------
-# HTML 部品
+# HTML parts
 # ---------------------------------------------------------------------------
 def sidebar_html(ctx: dict, rel: str, current: tuple[str, str] | None) -> str:
-    """全ページ共通の左の目次。階層ごとに直下の画面を並べ、今いるページを強調する"""
+    """The left-hand contents shared by every page: screens grouped by section, with the current page highlighted"""
     cur_kind, cur_key = current or ("", "")
 
     def mark(kind: str, key: str) -> str:
@@ -191,42 +224,44 @@ def sidebar_html(ctx: dict, rel: str, current: tuple[str, str] | None) -> str:
             continue
         items = "".join(f'<li><a href="{rel}pages/{pg["id"]}.html"{mark("page", pg["id"])}>{esc(pg["_name"])}<small>{esc(pg["id"])}</small></a></li>' for pg in direct)
         groups.append(f'<div class="grp"><a class="gh" href="{rel}sections/{section_key(path)}.html"{mark("section", path)}>{esc(ctx["sec_name"](path))}</a><ul>{items}</ul></div>')
-    head = (f'<div class="grp"><ul><li><a href="{rel}index.html"{mark("index", "")}>画面仕様書トップ</a></li>'
-            f'<li><a href="{rel}overview.html"{mark("overview", "")}>アプリ共通の仕様</a></li></ul></div>')
+    head = (f'<div class="grp"><ul><li><a href="{rel}index.html"{mark("index", "")}>{tr("Screen spec home")}</a></li>'
+            f'<li><a href="{rel}overview.html"{mark("overview", "")}>{tr("App-wide spec")}</a></li></ul></div>')
     body = head + "".join(groups)
-    return f'<aside class="side">{body}<details class="mob"><summary>目次（{len(ctx["pages"])} 画面）</summary>{body}</details></aside>'
+    return f'<aside class="side">{body}<details class="mob"><summary>{tr("Contents ({n} screens)", n=len(ctx["pages"]))}</summary>{body}</details></aside>'
 
 
-BOOK_MENU = [("index", "トップ", "index.html"), ("overview", "アプリ共通の仕様", "overview.html"), ("section", "階層仕様", "sections/root.html"),
-             ("page", "画面一覧", "index.html#pages"), ("safety", "安全性", "index.html#safety")]
+# English source strings; translated in topbar()
+BOOK_MENU = [("index", "Home", "index.html"), ("overview", "App-wide spec", "overview.html"), ("section", "Section spec", "sections/root.html"),
+             ("page", "Screen list", "index.html#pages"), ("safety", "Safety", "index.html#safety")]
 
 
 def topbar(rel: str, brand: str, mode: str, has_guide: bool, cur_kind: str = "") -> str:
-    """上の帯。1 段目は 2 つの読み物（システム概要書 / 画面仕様書）の切り替え、2 段目はブックの中のメニュー（ブックのときだけ）。
-    guide.html（write が作る）もこれを使う"""
+    """The top bar. Row 1 switches between the two documents (system guide / screen spec); row 2 is the menu
+    inside the book (book only). guide.html (made by `write`) uses this too"""
     cur = ' aria-current="page"'
     mode_nav = ""
     if has_guide:
-        tabs = [("guide", "システム概要書", "はじめに読む（1 ページ）", "guide.html"), ("book", "画面仕様書", "画面ごとの仕様とスクリーンショット", "index.html")]
-        mode_nav = '<nav class="mode" aria-label="読み物の切り替え">' + "".join(
-            f'<a href="{rel}{h}"{cur if m == mode else ""}><b>{t}</b><small>{sub}</small></a>' for m, t, sub, h in tabs) + "</nav>"
+        tabs = [("guide", tr("System guide"), tr("Start here (one page)"), "guide.html"),
+                ("book", tr("Screen spec"), tr("Every screen, with specs and screenshots"), "index.html")]
+        mode_nav = f'<nav class="mode" aria-label="{tr("Switch document")}">' + "".join(
+            f'<a href="{rel}{h}"{cur if m == mode else ""}><b>{title}</b><small>{note}</small></a>' for m, title, note, h in tabs) + "</nav>"
     sub = ""
     if mode == "book":
-        sub = '<nav class="sub" aria-label="画面仕様書の中"><span class="where">画面仕様書</span>' + "".join(
-            f'<a href="{rel}{h}"{cur if k == cur_kind else ""}>{t}</a>' for k, t, h in BOOK_MENU) + "</nav>"
+        sub = f'<nav class="sub" aria-label="{tr("Inside the screen spec")}"><span class="where">{tr("Screen spec")}</span>' + "".join(
+            f'<a href="{rel}{h}"{cur if k == cur_kind else ""}>{tr(label)}</a>' for k, label, h in BOOK_MENU) + "</nav>"
     home = "guide.html" if mode == "guide" else "index.html"
     return f'<header class="top"><div class="bar"><a class="brand" href="{rel}{home}">{esc(brand)}</a>{mode_nav}</div>{sub}</header>'
 
 
 def guide_html(body: str, model: str, ctx: dict) -> str:
-    """システム概要書（本文は write で Fable が書いた DIR/guide_body.html）。ブックと違い 1 カラムの読み物"""
+    """The system guide (the body is DIR/guide_body.html, written by `write`). Unlike the book it is a one-column read"""
     brand = ctx["desc"].get("app", {}).get("name") or ctx["meta"]["origin"]
     return f"""<!DOCTYPE html>
-<html lang="ja" class="guide-doc"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light">
-<title>{esc(brand)} システム概要書</title><link rel="stylesheet" href="assets/book.css"></head>
+<html lang="{i18n.html_lang(LANG)}" class="guide-doc"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light">
+<title>{esc(tr("{name} — System guide", name=brand))}</title><link rel="stylesheet" href="assets/book.css"></head>
 <body>{topbar("", brand, "guide", True)}
 <main class="guide-main">{body}</main>
-<footer>この仕様書は、ブラウザ巡回とスクリーンショットから作った画面ごとの仕様をもとに {esc(model)} が書いた。「推定」「要確認」と記した項目は、原本の設計書・開発者への確認が要る。根拠は「画面仕様書」の各画面の仕様とスクリーンショットにある。</footer>
+<footer>{tr("{model} wrote this guide from per-screen specs that were built from a read-only browser crawl and screenshots. Items marked “Inferred” or “To confirm” need checking against the original design documents or the developers. The evidence is in the screen spec: each screen's spec items and screenshots.", model=esc(model))}</footer>
 </body></html>"""
 
 
@@ -237,18 +272,18 @@ def layout(title: str, body: str, rel: str, ctx: dict, crumbs: list[tuple[str, s
         crumb_html = '<nav class="crumbs">' + " / ".join(f'<a href="{esc(h)}">{esc(t)}</a>' if h else f"<span>{esc(t)}</span>" for t, h in crumbs) + "</nav>"
     brand = ctx["desc"].get("app", {}).get("name") or ctx["meta"]["origin"]
     return f"""<!DOCTYPE html>
-<html lang="ja" class="book"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light">
+<html lang="{i18n.html_lang(LANG)}" class="book"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light">
 <title>{esc(title)}</title><link rel="stylesheet" href="{rel}assets/book.css"></head>
 <body>{topbar(rel, brand, "book", ctx.get("has_guide", False), (current or ("", ""))[0])}
 <div class="shell">{sidebar_html(ctx, rel, current)}
 <div><main>{crumb_html}{body}</main>
-<footer>生成日時 {esc(ctx["generated"])} · app-spec-crawler · 本書はブラウザ巡回とスクリーンショットから推定した仕様であり、「推定」「要確認」と記した項目は原本の設計書・開発者への確認が必要です。</footer></div></div>
+<footer>{tr("Generated {ts}", ts=esc(ctx["generated"]))} · app-spec-crawler · {tr("This spec was inferred from a read-only browser crawl and screenshots. Items marked “Inferred” or “To confirm” need checking against the original design documents or the developers.")}</footer></div></div>
 <script>(function(){{var a=document.querySelector('aside.side>.grp [aria-current="page"]');if(a)a.scrollIntoView({{block:"center"}});}})();</script>
 </body></html>"""
 
 
 def about_grid(items: list[tuple[str, str]]) -> str:
-    """1〜2 行で終わる短い説明をまとめて 1 枚のカードに並べる"""
+    """Put short one- or two-line descriptions side by side on one card"""
     cells = "".join(f'<div class="about-item"><h3>{esc(t)}</h3>{c}</div>' for t, c in items if (c or "").strip())
     return f'<div class="about">{cells}</div>' if cells else ""
 
@@ -262,7 +297,7 @@ def section(title: str, content: str, cls: str = "", anchor: str = "", count: st
 
 
 def sections_with_toc(parts: list[tuple[str, str, str, str]]) -> str:
-    """(anchor, 見出し, 中身, class) の並びから、空でない節と、その節へのページ内目次を作る"""
+    """From a list of (anchor, heading, content, class), build the non-empty sections and an in-page table of contents for them"""
     kept = [(a, t, c, cls) for a, t, c, cls in parts if (c or "").strip()]
     toc = '<nav class="toc-inpage">' + "".join(f'<a href="#{esc(a)}">{esc(t)}</a>' for a, t, _, _ in kept) + "</nav>" if len(kept) > 2 else ""
     return toc + "".join(section(t, c, cls, a) for a, t, c, cls in kept)
@@ -295,27 +330,34 @@ def table(headers: list[str], rows: list, keys: list[str] | None = None, raw_col
     return f'<div class="tbl"><table class="grid"><thead><tr>{h}</tr></thead><tbody>{body}</tbody></table></div>'
 
 
-def todo(label: str = "要記入") -> str:
-    return f'<p class="todo">（{esc(label)}）</p>'
+def todo(label: str = "(to fill in)") -> str:
+    """A "to fill in" placeholder. `label` is an English source string. Always class="todo" (other tools count it)."""
+    return f'<p class="todo">{esc(tr(label))}</p>'
+
+
+def todo_inline(label: str = "(to fill in)") -> str:
+    return f'<span class="todo">{esc(tr(label))}</span>'
+
+
+CONF_CLASS = {"verified": "ok", "inferred": "guess", "to_confirm": "ask"}
 
 
 def conf_tag(c: str) -> str:
-    cls = {"確認済": "ok", "推定": "guess", "要確認": "ask"}.get((c or "").strip(), "")
-    return f'<span class="conf {cls}">{esc(c or "-")}</span>'
+    key = i18n.normalize_confidence(c)
+    return f'<span class="conf {CONF_CLASS.get(key, "")}">{esc(i18n.confidence_label(LANG, key) if key else (c or "-"))}</span>'
 
 
 def conf_chips(items: list[dict]) -> str:
-    n = {"確認済": 0, "推定": 0, "要確認": 0}
+    n = {k: 0 for k in i18n.CONFIDENCE}
     for it in items or []:
-        c = (it.get("confidence") or "").strip()
-        if c in n:
-            n[c] += 1
-    cls = {"確認済": "ok", "推定": "guess", "要確認": "ask"}
-    return "".join(f'<span class="chip {cls[k]}">{k} <b>{v}</b></span>' for k, v in n.items() if v)
+        key = i18n.normalize_confidence(it.get("confidence"))
+        if key:
+            n[key] += 1
+    return "".join(f'<span class="chip {CONF_CLASS[k]}">{esc(i18n.confidence_label(LANG, k))} <b>{v}</b></span>' for k, v in n.items() if v)
 
 
 def spec_table(items: list[dict], prefix: str, cap_href: str | None) -> str:
-    """仕様項目テーブル。id 未記入は自動採番。evidence は キャプチャページへのリンクにする"""
+    """Spec item table. Empty ids are auto-numbered. evidence becomes a link to the capture page"""
     if not items:
         return ""
     body = ""
@@ -326,7 +368,7 @@ def spec_table(items: list[dict], prefix: str, cap_href: str | None) -> str:
         body += (f'<tr id="{esc(sid)}"><td class="id"><code>{esc(sid)}</code></td><td class="type">{esc(it.get("type"))}</td>'
                  f'<td class="stmt">{esc(it.get("statement"))}</td><td class="cond">{esc(it.get("condition"))}</td>'
                  f'<td class="ev">{ev_html}</td><td class="cf">{conf_tag(it.get("confidence"))}</td><td class="note">{esc(it.get("notes"))}</td></tr>')
-    head = "".join(f"<th>{h}</th>" for h in ["ID", "種別", "仕様", "条件", "根拠", "確度", "備考"])
+    head = "".join(f"<th>{h}</th>" for h in ["ID", tr("Type"), tr("Spec"), tr("Condition"), tr("Evidence"), tr("Confidence"), tr("Notes")])
     return f'<div class="tbl"><table class="grid spec"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
 
 
@@ -336,21 +378,21 @@ def parent_chain(pg: dict, by_id: dict) -> str:
         chain.append(cur.get("_name") or cur["id"])
         cur = by_id.get(cur.get("parent")) if cur.get("parent") else None
         guard += 1
-    return " ← ".join(chain) if len(chain) > 1 else "起点ページ"
+    return " ← ".join(chain) if len(chain) > 1 else tr("Start page")
 
 
 def url_meta(url: str) -> str:
-    """トークン入りの長い URL は 1 行に縮め、押すと全文が出るようにする"""
+    """Shorten a long URL (e.g. one carrying a token) to one line; clicking it shows the full text"""
     return f'<details class="url-full"><summary><code class="url" title="{esc(url)}">{esc(url)}</code></summary><code class="url">{esc(url)}</code></details>'
 
 
 def prev_next(pg: dict, alt_href: str, alt_label: str, prefix: str = "") -> str:
     nav = '<nav class="pn">'
     if pg.get("_prev"):
-        nav += f'<a class="prev" href="{prefix}{pg["_prev"]["id"]}.html"><small>← 前の画面</small>{esc(pg["_prev"]["_name"])}</a>'
+        nav += f'<a class="prev" href="{prefix}{pg["_prev"]["id"]}.html"><small>{tr("← Previous")}</small>{esc(pg["_prev"]["_name"])}</a>'
     nav += f'<a class="alt" href="{esc(alt_href)}">{esc(alt_label)}</a>'
     if pg.get("_next"):
-        nav += f'<a class="next" href="{prefix}{pg["_next"]["id"]}.html"><small>次の画面 →</small>{esc(pg["_next"]["_name"])}</a>'
+        nav += f'<a class="next" href="{prefix}{pg["_next"]["id"]}.html"><small>{tr("Next →")}</small>{esc(pg["_next"]["_name"])}</a>'
     return nav + "</nav>"
 
 
@@ -359,23 +401,23 @@ def n_shots(pg: dict) -> int:
 
 
 # ---------------------------------------------------------------------------
-# 画面仕様 pages/pXXX.html
+# Screen spec pages/pXXX.html
 # ---------------------------------------------------------------------------
 def page_spec_html(pg: dict, d: dict, ctx: dict) -> str:
     name, pid = pg["_name"], pg["id"]
     sec_path = pg["_section"]
     rel = "../"
-    crumbs = [("トップ", f"{rel}index.html")] + [(ctx["sec_name"](p), f"{rel}sections/{section_key(p)}.html") for p in ctx["ancestors"](sec_path)] + [(name, "")]
+    crumbs = [(tr("Home"), f"{rel}index.html")] + [(ctx["sec_name"](p), f"{rel}sections/{section_key(p)}.html") for p in ctx["ancestors"](sec_path)] + [(name, "")]
     specs = d.get("specs") or []
 
-    lead = f'<p class="lead">{esc(d.get("summary"))}</p>' if d.get("summary") else todo("summary を記入")
-    chips = (f'<div class="chips"><span class="chip">{esc(pg["_cat"])}</span><span class="chip">仕様 <b>{len(specs)}</b></span>'
-             f'{conf_chips(specs)}<span class="chip">キャプチャ <b>{n_shots(pg)}</b></span></div>')
-    meta = (f'<dl class="meta"><dt>パス</dt><dd><code>{esc(path_of(pg))}</code></dd>'
-            f'<dt>所属階層</dt><dd><a href="{rel}sections/{section_key(sec_path)}.html">{esc(ctx["sec_name"](sec_path))}</a></dd>'
-            f'<dt>到達経路</dt><dd>{esc(parent_chain(pg, ctx["by_id"]))}</dd><dt>URL</dt><dd>{url_meta(pg["url"])}</dd></dl>')
-    b = [f'<div class="hero"><div><p class="kind">画面仕様 · {esc(pid)}</p><h1>{esc(name)}</h1>{lead}{chips}{meta}</div>'
-         f'<a class="shotlink" href="{rel}captures/{pid}.html"><img src="{rel}{esc(pg["screenshot"])}" alt="{esc(name)}"><span>キャプチャ {n_shots(pg)} 枚を見る →</span></a></div>']
+    lead = f'<p class="lead">{esc(d.get("summary"))}</p>' if d.get("summary") else todo("(fill in summary)")
+    chips = (f'<div class="chips"><span class="chip">{esc(pg["_cat"])}</span><span class="chip">{tr("Specs")} <b>{len(specs)}</b></span>'
+             f'{conf_chips(specs)}<span class="chip">{tr("Captures")} <b>{n_shots(pg)}</b></span></div>')
+    meta = (f'<dl class="meta"><dt>{tr("Path")}</dt><dd><code>{esc(path_of(pg))}</code></dd>'
+            f'<dt>{tr("Section")}</dt><dd><a href="{rel}sections/{section_key(sec_path)}.html">{esc(ctx["sec_name"](sec_path))}</a></dd>'
+            f'<dt>{tr("Reached via")}</dt><dd>{esc(parent_chain(pg, ctx["by_id"]))}</dd><dt>URL</dt><dd>{url_meta(pg["url"])}</dd></dl>')
+    b = [f'<div class="hero"><div><p class="kind">{tr("Screen spec · {pid}", pid=esc(pid))}</p><h1>{esc(name)}</h1>{lead}{chips}{meta}</div>'
+         f'<a class="shotlink" href="{rel}captures/{pid}.html"><img src="{rel}{esc(pg["screenshot"])}" alt="{esc(name)}"><span>{tr("View 1 capture →") if n_shots(pg) == 1 else tr("View {n} captures →", n=n_shots(pg))}</span></a></div>']
 
     sdesc = d.get("states") or {}
     srows = []
@@ -383,91 +425,92 @@ def page_spec_html(pg: dict, d: dict, ctx: dict) -> str:
         if not st.get("screenshot"):
             continue
         sd = sdesc.get(st["id"], {})
-        srows.append([f'<a href="{rel}captures/{pid}.html#{esc(st["id"])}">{esc(st["id"])}</a>', esc(st.get("label")), esc(st.get("result")), esc(sd.get("description") or "（要記入）"), esc(sd.get("when_shown"))])
+        srows.append([f'<a href="{rel}captures/{pid}.html#{esc(st["id"])}">{esc(st["id"])}</a>', esc(ld(st.get("label"))), esc(ld(st.get("result"))),
+                      esc(sd.get("description")) if sd.get("description") else todo_inline(), esc(sd.get("when_shown"))])
 
     b.append(sections_with_toc([
-        ("specs", "仕様項目", spec_table(specs, f"SPEC-{pid}", f"{rel}captures/{pid}.html") or todo("この画面の仕様項目を specs に記入"), "specs"),
-        ("about", "この画面について", about_grid([("目的・位置づけ", para(d.get("purpose")) or todo()), ("表示条件", para(d.get("display_conditions")) or todo()),
-                                                 ("利用者と使われ方", para(d.get("users_and_usage")) or todo())]), ""),
-        ("features", "主要機能", ul(d.get("features")), ""),
-        ("ui", "UI要素と挙動", table(["要素", "挙動", "備考"], d.get("ui_elements") or [], ["element", "behavior", "notes"]) or auto_ui_table(pg), ""),
-        ("inputs", "入力項目", table(["項目", "種別", "必須", "バリデーション想定", "備考"], d.get("inputs") or [], ["field", "type", "required", "validation_assumption", "notes"]) or auto_inputs_table(pg), ""),
-        ("flows", "利用フロー", ol(d.get("flows")), ""),
-        ("transitions", "画面遷移", table(["トリガー", "遷移先", "備考"], d.get("transitions") or [], ["trigger", "to", "notes"]) or auto_transitions(pg, ctx["by_norm"]), ""),
-        ("rules", "バリエーションと業務ルール", about_grid([("状態・バリエーション", para(d.get("states_and_variants"))), ("業務ルール・制約", para(d.get("business_rules")))]), ""),
-        ("states", "操作で現れる状態", table(["状態", "操作", "結果", "説明", "表示条件"], srows, raw_cols={0, 1, 2, 3, 4}), ""),
-        ("questions", "不明点・要確認", ul(d.get("open_questions")), "questions"),
+        ("specs", tr("Spec items"), spec_table(specs, f"SPEC-{pid}", f"{rel}captures/{pid}.html") or todo("(fill in this screen's spec items under specs)"), "specs"),
+        ("about", tr("About this screen"), about_grid([(tr("Purpose"), para(d.get("purpose")) or todo()), (tr("Shown when"), para(d.get("display_conditions")) or todo()),
+                                                       (tr("Who uses it and how"), para(d.get("users_and_usage")) or todo())]), ""),
+        ("features", tr("Main features"), ul(d.get("features")), ""),
+        ("ui", tr("UI elements and behavior"), table([tr("Element"), tr("Behavior"), tr("Notes")], d.get("ui_elements") or [], ["element", "behavior", "notes"]) or auto_ui_table(pg), ""),
+        ("inputs", tr("Input fields"), table([tr("Field"), tr("Type"), tr("Required"), tr("Assumed validation"), tr("Notes")], d.get("inputs") or [], ["field", "type", "required", "validation_assumption", "notes"]) or auto_inputs_table(pg), ""),
+        ("flows", tr("Usage flow"), ol(d.get("flows")), ""),
+        ("transitions", tr("Navigation"), table([tr("Trigger"), tr("Goes to"), tr("Notes")], d.get("transitions") or [], ["trigger", "to", "notes"]) or auto_transitions(pg, ctx["by_norm"]), ""),
+        ("rules", tr("Variants and business rules"), about_grid([(tr("States and variants"), para(d.get("states_and_variants"))), (tr("Business rules and constraints"), para(d.get("business_rules")))]), ""),
+        ("states", tr("States reached by interaction"), table([tr("State"), tr("Action"), tr("Result"), tr("Description"), tr("Shown when")], srows, raw_cols={0, 1, 2, 3, 4}), ""),
+        ("questions", tr("Open questions"), ul(d.get("open_questions")), "questions"),
     ]))
-    b.append(f'<details class="raw"><summary>自動抽出データ（見出し・リンク・ボタン・テーブル・クリック判定）</summary>{auto_raw(pg)}</details>')
-    b.append(prev_next(pg, f"{rel}captures/{pid}.html", "この画面のキャプチャ"))
-    return layout(f"{name} | 画面仕様", "".join(b), rel, ctx, crumbs, ("page", pid))
+    b.append(f'<details class="raw"><summary>{tr("Auto-extracted data (headings, links, buttons, tables, click decisions)")}</summary>{auto_raw(pg)}</details>')
+    b.append(prev_next(pg, f"{rel}captures/{pid}.html", tr("Captures of this screen")))
+    return layout(tr("{name} | Screen spec", name=name), "".join(b), rel, ctx, crumbs, ("page", pid))
 
 
 # ---------------------------------------------------------------------------
-# 画面キャプチャ captures/pXXX.html
+# Screen captures captures/pXXX.html
 # ---------------------------------------------------------------------------
 def page_capture_html(pg: dict, d: dict, ctx: dict) -> str:
     name, pid, rel = pg["_name"], pg["id"], "../"
-    crumbs = [("トップ", f"{rel}index.html"), (name, f"{rel}pages/{pid}.html"), ("キャプチャ", "")]
+    crumbs = [(tr("Home"), f"{rel}index.html"), (name, f"{rel}pages/{pid}.html"), (tr("Captures"), "")]
     sdesc = d.get("states") or {}
     states = [st for st in pg.get("states", []) if st.get("screenshot")]
-    b = [f'<div class="hero" style="grid-template-columns:1fr"><div><p class="kind">画面キャプチャ · {esc(pid)}</p><h1>{esc(name)}</h1>'
+    b = [f'<div class="hero" style="grid-template-columns:1fr"><div><p class="kind">{tr("Screen captures · {pid}", pid=esc(pid))}</p><h1>{esc(name)}</h1>'
          + (f'<p class="lead">{esc(d.get("summary"))}</p>' if d.get("summary") else "")
-         + f'<dl class="meta"><dt>取得日時</dt><dd>{esc(pg.get("visited_at"))}</dd><dt>仕様書</dt><dd><a href="{rel}pages/{pid}.html">{esc(name)} の画面仕様</a></dd><dt>URL</dt><dd>{url_meta(pg["url"])}</dd></dl></div></div>']
+         + f'<dl class="meta"><dt>{tr("Captured at")}</dt><dd>{esc(pg.get("visited_at"))}</dd><dt>{tr("Spec page")}</dt><dd><a href="{rel}pages/{pid}.html">{tr("{name} — screen spec", name=esc(name))}</a></dd><dt>URL</dt><dd>{url_meta(pg["url"])}</dd></dl></div></div>']
     if states:
-        b.append('<nav class="states"><a href="#init"><b>init</b>初期表示</a>'
-                 + "".join(f'<a href="#{esc(st["id"])}"><b>{esc(st["id"])}</b>{esc(st.get("label"))}</a>' for st in states) + "</nav>")
-    b.append(f'<article class="state" id="init"><h3>init 初期表示</h3><figure class="shot"><a href="{rel}{esc(pg["screenshot"])}" target="_blank"><img src="{rel}{esc(pg["screenshot"])}" alt="{esc(name)} 初期表示"></a></figure></article>')
+        b.append(f'<nav class="states"><a href="#init"><b>init</b>{tr("Initial view")}</a>'
+                 + "".join(f'<a href="#{esc(st["id"])}"><b>{esc(st["id"])}</b>{esc(ld(st.get("label")))}</a>' for st in states) + "</nav>")
+    b.append(f'<article class="state" id="init"><h3>init {tr("Initial view")}</h3><figure class="shot"><a href="{rel}{esc(pg["screenshot"])}" target="_blank"><img src="{rel}{esc(pg["screenshot"])}" alt="{esc(name)} {tr("Initial view")}"></a></figure></article>')
     for st in states:
         sd = sdesc.get(st["id"], {})
-        b.append(f'<article class="state" id="{esc(st["id"])}"><h3>{esc(st["id"])} 「{esc(st.get("label"))}」 <span class="tag">{esc(st.get("result"))}</span></h3>'
-                 + (para(sd.get("description")) or todo("この状態の説明を記入"))
-                 + (f'<p class="small"><b>表示条件:</b> {esc(sd.get("when_shown"))}</p>' if sd.get("when_shown") else "")
+        b.append(f'<article class="state" id="{esc(st["id"])}"><h3>{esc(st["id"])} {tr("“{label}”", label=esc(ld(st.get("label"))))} <span class="tag">{esc(ld(st.get("result")))}</span></h3>'
+                 + (para(sd.get("description")) or todo("(describe this state)"))
+                 + (f'<p class="small"><b>{tr("Shown when:")}</b> {esc(sd.get("when_shown"))}</p>' if sd.get("when_shown") else "")
                  + para(sd.get("notes"))
-                 + (f'<p class="small">遷移先: <code>{esc(st.get("url_after"))}</code></p>' if st.get("result") == "ページ遷移" else "")
+                 + (f'<p class="small">{tr("Goes to:")} <code>{esc(st.get("url_after"))}</code></p>' if is_navigation(st) else "")
                  + f'<figure class="shot"><a href="{rel}{esc(st["screenshot"])}" target="_blank"><img src="{rel}{esc(st["screenshot"])}" alt="" loading="lazy"></a></figure>'
                  + "</article>")
     skipped = [c for c in pg.get("clickables", []) if not c.get("clickable")]
     if skipped:
-        b.append(f'<details class="raw"><summary>キャプチャしていない要素 {len(skipped)} 件（安全判定で押していない）</summary>'
-                 + table(["要素", "種別", "理由"], [[c.get("text") or c.get("ariaLabel") or c.get("title") or "(ラベルなし)", c.get("role") or c.get("tag"), c.get("reason")] for c in skipped]) + "</details>")
-    b.append(prev_next(pg, f"{rel}pages/{pid}.html", "この画面の仕様書"))
-    return layout(f"{name} | キャプチャ", "".join(b), rel, ctx, crumbs, ("page", pid))
+        b.append(f'<details class="raw"><summary>{tr("Elements not captured: {n} (not clicked under the safety rules)", n=len(skipped))}</summary>'
+                 + table([tr("Element"), tr("Type"), tr("Reason")], [[c.get("text") or c.get("ariaLabel") or c.get("title") or tr("(no label)"), c.get("role") or c.get("tag"), ld(c.get("reason"))] for c in skipped]) + "</details>")
+    b.append(prev_next(pg, f"{rel}pages/{pid}.html", tr("Spec of this screen")))
+    return layout(tr("{name} | Captures", name=name), "".join(b), rel, ctx, crumbs, ("page", pid))
 
 
 # ---------------------------------------------------------------------------
-# 階層仕様 sections/<key>.html
+# Section spec sections/<key>.html
 # ---------------------------------------------------------------------------
 def page_card(pg: dict, d: dict, rel: str) -> str:
     return (f'<a class="pcard" href="{rel}pages/{pg["id"]}.html"><img src="{rel}{esc(pg["screenshot"])}" alt="" loading="lazy">'
             f'<div><b>{esc(pg["_name"])}<small>{esc(pg["id"])}</small></b><span>{esc(d.get("summary") or "")}</span>'
-            f'<em>仕様 {len(d.get("specs") or [])} · キャプチャ {n_shots(pg)}</em></div></a>')
+            f'<em>{tr("Specs")} {len(d.get("specs") or [])} · {tr("Captures")} {n_shots(pg)}</em></div></a>')
 
 
 def section_html(path: str, node: dict, s: dict, ctx: dict) -> str:
     rel = "../"
     name = ctx["sec_name"](path)
-    crumbs = [("トップ", f"{rel}index.html")] + [(ctx["sec_name"](p), f"{rel}sections/{section_key(p)}.html") for p in ctx["ancestors"](path)[:-1]] + [(name, "")]
+    crumbs = [(tr("Home"), f"{rel}index.html")] + [(ctx["sec_name"](p), f"{rel}sections/{section_key(p)}.html") for p in ctx["ancestors"](path)[:-1]] + [(name, "")]
     desc_pages = descendant_pages(ctx["nodes"], path)
     direct = ([node["index_page"]] if node["index_page"] else []) + node["pages"]
     common = s.get("common_specs") or []
-    b = [f'<div class="hero" style="grid-template-columns:1fr"><div><p class="kind">階層仕様 · 深さ {node["depth"]}</p><h1>{esc(name)} <small><code>{esc(path)}</code></small></h1>'
-         + (f'<p class="lead">{esc(s.get("summary"))}</p>' if s.get("summary") else todo("summary を記入"))
-         + f'<div class="chips"><span class="chip">直下の画面 <b>{len(direct)}</b></span><span class="chip">子階層 <b>{len(node["children"])}</b></span>'
-         + f'<span class="chip">配下の画面 <b>{len(desc_pages)}</b></span><span class="chip">共通仕様 <b>{len(common)}</b></span></div></div></div>']
+    b = [f'<div class="hero" style="grid-template-columns:1fr"><div><p class="kind">{tr("Section spec · depth {n}", n=node["depth"])}</p><h1>{esc(name)} <small><code>{esc(path)}</code></small></h1>'
+         + (f'<p class="lead">{esc(s.get("summary"))}</p>' if s.get("summary") else todo("(fill in summary)"))
+         + f'<div class="chips"><span class="chip">{tr("Screens here")} <b>{len(direct)}</b></span><span class="chip">{tr("Subsections")} <b>{len(node["children"])}</b></span>'
+         + f'<span class="chip">{tr("Screens below")} <b>{len(desc_pages)}</b></span><span class="chip">{tr("Shared specs")} <b>{len(common)}</b></span></div></div></div>']
     crow = []
     for c in node["children"]:
         cs = ctx["desc"]["sections"].get(c, {})
-        crow.append(f'<a class="card" href="{rel}sections/{section_key(c)}.html"><b>{esc(ctx["sec_name"](c))}</b><span>{esc(cs.get("summary") or "")}</span><em>{len(descendant_pages(ctx["nodes"], c))} 画面 · <code>{esc(c)}</code></em></a>')
+        crow.append(f'<a class="card" href="{rel}sections/{section_key(c)}.html"><b>{esc(ctx["sec_name"](c))}</b><span>{esc(cs.get("summary") or "")}</span><em>{screens(len(descendant_pages(ctx["nodes"], c)))} · <code>{esc(c)}</code></em></a>')
     b.append(sections_with_toc([
-        ("about", "この階層について", about_grid([("業務上の役割", para(s.get("purpose"))), ("含まれる画面と役割分担", para(s.get("contains")) or todo()),
-                                                 ("階層内の遷移パターン", para(s.get("navigation"))), ("権限・表示条件", para(s.get("access")))]), ""),
-        ("common", "階層共通の仕様項目", spec_table(common, f"SPEC-SEC-{section_key(path).upper()}", None), "specs"),
-        ("pages", "この階層直下の画面", f'<div class="pgrid">{"".join(page_card(pg, ctx["desc"]["pages"].get(pg["id"], {}), rel) for pg in direct)}</div>' if direct else "", ""),
-        ("children", "子階層", f'<div class="cards">{"".join(crow)}</div>' if crow else "", ""),
-        ("questions", "不明点・要確認", ul(s.get("open_questions")), "questions"),
+        ("about", tr("About this section"), about_grid([(tr("Role in the business"), para(s.get("purpose"))), (tr("Screens included and how they divide the work"), para(s.get("contains")) or todo()),
+                                                        (tr("Navigation within the section"), para(s.get("navigation"))), (tr("Permissions and visibility"), para(s.get("access")))]), ""),
+        ("common", tr("Spec items shared across this section"), spec_table(common, f"SPEC-SEC-{section_key(path).upper()}", None), "specs"),
+        ("pages", tr("Screens directly in this section"), f'<div class="pgrid">{"".join(page_card(pg, ctx["desc"]["pages"].get(pg["id"], {}), rel) for pg in direct)}</div>' if direct else "", ""),
+        ("children", tr("Subsections"), f'<div class="cards">{"".join(crow)}</div>' if crow else "", ""),
+        ("questions", tr("Open questions"), ul(s.get("open_questions")), "questions"),
     ]))
-    return layout(f"{name} | 階層仕様", "".join(b), rel, ctx, crumbs, ("section", path))
+    return layout(tr("{name} | Section spec", name=name), "".join(b), rel, ctx, crumbs, ("section", path))
 
 
 def tree_html(path: str, ctx: dict, rel: str, root: bool = False) -> str:
@@ -485,27 +528,27 @@ def tree_html(path: str, ctx: dict, rel: str, root: bool = False) -> str:
 
 
 # ---------------------------------------------------------------------------
-# アプリ共通の仕様 overview.html
+# App-wide spec overview.html
 # ---------------------------------------------------------------------------
 def overview_html(ctx: dict) -> str:
     app = ctx["desc"].get("app", {})
     rel = ""
     specs = app.get("specs") or []
-    b = [f'<div class="hero" style="grid-template-columns:1fr"><div><p class="kind">アプリ共通の仕様</p><h1>{esc(app.get("name") or ctx["meta"]["origin"])}</h1>'
-         f'<div class="chips"><span class="chip">全体の仕様 <b>{len(specs)}</b></span>{conf_chips(specs)}</div></div></div>']
+    b = [f'<div class="hero" style="grid-template-columns:1fr"><div><p class="kind">{tr("App-wide spec")}</p><h1>{esc(app.get("name") or ctx["meta"]["origin"])}</h1>'
+         f'<div class="chips"><span class="chip">{tr("App-wide specs")} <b>{len(specs)}</b></span>{conf_chips(specs)}</div></div></div>']
     b.append(sections_with_toc([
-        ("overview", "アプリケーション概要", para(app.get("overview")) or todo(), ""),
-        ("specs", "アプリ共通の仕様項目", spec_table(specs, "SPEC-APP", None) or todo("アプリ全体に関わる仕様を app.specs に記入"), "specs"),
-        ("domain", "業務ドメイン・主要エンティティ", para(app.get("business_domain")), ""),
-        ("users", "想定利用者", para(app.get("target_users")) or todo(), ""),
-        ("auth", "認証・権限", para(app.get("auth_and_roles")) or todo(), ""),
-        ("nav", "グローバルナビゲーション", para(app.get("global_navigation")) or todo(), ""),
-        ("common", "共通UI・共通仕様", para(app.get("common_ui")) or todo(), ""),
-        ("nonfunc", "非機能（観察できた範囲）", para(app.get("non_functional")), ""),
-        ("tree", "画面階層の全体像", tree_html("/", ctx, rel, root=True), ""),
-        ("questions", "不明点・要確認", ul(app.get("open_questions")) + para(app.get("notes")), "questions"),
+        ("overview", tr("Application overview"), para(app.get("overview")) or todo(), ""),
+        ("specs", tr("App-wide spec items"), spec_table(specs, "SPEC-APP", None) or todo("(fill in app-wide spec items under app.specs)"), "specs"),
+        ("domain", tr("Business domain and main entities"), para(app.get("business_domain")), ""),
+        ("users", tr("Intended users"), para(app.get("target_users")) or todo(), ""),
+        ("auth", tr("Authentication and permissions"), para(app.get("auth_and_roles")) or todo(), ""),
+        ("nav", tr("Global navigation"), para(app.get("global_navigation")) or todo(), ""),
+        ("common", tr("Shared UI and shared specs"), para(app.get("common_ui")) or todo(), ""),
+        ("nonfunc", tr("Non-functional (as observed)"), para(app.get("non_functional")), ""),
+        ("tree", tr("Screen hierarchy"), tree_html("/", ctx, rel, root=True), ""),
+        ("questions", tr("Open questions"), ul(app.get("open_questions")) + para(app.get("notes")), "questions"),
     ]))
-    return layout(f'{app.get("name") or ctx["meta"]["origin"]} アプリ共通の仕様', "".join(b), rel, ctx, [("トップ", "index.html"), ("アプリ共通の仕様", "")], ("overview", ""))
+    return layout(tr("{name} — App-wide spec", name=app.get("name") or ctx["meta"]["origin"]), "".join(b), rel, ctx, [(tr("Home"), "index.html"), (tr("App-wide spec"), "")], ("overview", ""))
 
 
 # ---------------------------------------------------------------------------
@@ -515,69 +558,71 @@ def index_html(ctx: dict, safety: dict) -> str:
     app, meta, pages, desc = ctx["desc"].get("app", {}), ctx["meta"], ctx["pages"], ctx["desc"]
     all_specs = list(app.get("specs") or []) + [x for s in desc.get("sections", {}).values() for x in (s.get("common_specs") or [])] \
         + [x for pg in pages for x in (desc["pages"].get(pg["id"], {}).get("specs") or [])]
-    first = (app.get("overview") or "").split("。")[0]
-    b = [f'<p class="kind">画面仕様書</p><h1>{esc(app.get("name") or meta["origin"])}</h1>'
-         + (f'<p class="lead">{esc(first)}。</p>' if first else "")
-         + f'<div class="chips">{conf_chips(all_specs)}<span class="chip">巡回 {esc(meta.get("generated_at"))}</span></div>'
-         + ('<a class="guide-cta" href="guide.html"><b>システム概要書を開く</b><span>初めての人向けに、できること・画面の地図・業務の流れ・決まりごとを 1 ページにまとめたもの</span></a>' if ctx.get("has_guide") else "")]
+    first = first_sentence(app.get("overview"))
+    b = [f'<p class="kind">{tr("Screen spec")}</p><h1>{esc(app.get("name") or meta["origin"])}</h1>'
+         + (f'<p class="lead">{esc(first)}</p>' if first else "")
+         + f'<div class="chips">{conf_chips(all_specs)}<span class="chip">{tr("Crawled {ts}", ts=esc(meta.get("generated_at")))}</span></div>'
+         + (f'<a class="guide-cta" href="guide.html"><b>{tr("Open the system guide")}</b><span>{tr("One page for newcomers: what it does, a map of the screens, the main workflows, and the rules")}</span></a>' if ctx.get("has_guide") else "")]
     b.append('<div class="stats">' + "".join(f'<div class="stat"><b>{v}</b><span>{k}</span></div>' for k, v in [
-        ("画面", len(pages)), ("階層", len(ctx["nodes"])), ("仕様項目", len(all_specs)), ("キャプチャ", sum(n_shots(pg) for pg in pages)),
-        ("押していない要素", len(safety.get("skipped_elements", []))), ("遮断した変更系通信", len(safety.get("blocked_requests", [])))]) + "</div>")
+        (tr("Screens"), len(pages)), (tr("Sections"), len(ctx["nodes"])), (tr("Spec items"), len(all_specs)), (tr("Captures"), sum(n_shots(pg) for pg in pages)),
+        (tr("Elements not clicked"), len(safety.get("skipped_elements", []))), (tr("Blocked write requests"), len(safety.get("blocked_requests", [])))]) + "</div>")
 
-    seccards = [f'<a class="card" href="overview.html"><b>アプリ共通の仕様</b><span>全画面に共通する仕様項目・認証/権限・共通UI・ナビゲーション</span><em>仕様 {len(app.get("specs") or [])}</em></a>']
+    seccards = [f'<a class="card" href="overview.html"><b>{tr("App-wide spec")}</b><span>{tr("Spec items shared by every screen, authentication and permissions, shared UI, navigation")}</span><em>{tr("Specs")} {len(app.get("specs") or [])}</em></a>']
     for path in ctx["section_order"]:
         n = len(descendant_pages(ctx["nodes"], path))
         if path == "/" or not n:
             continue
         s = desc["sections"].get(path, {})
-        seccards.append(f'<a class="card" href="sections/{section_key(path)}.html"><b>{esc(ctx["sec_name"](path))}</b><span>{esc(s.get("summary") or "")}</span><em>{n} 画面 · <code>{esc(path)}</code></em></a>')
-    b.append(section("階層", f'<div class="cards">{"".join(seccards)}</div>', anchor="tree"))
+        seccards.append(f'<a class="card" href="sections/{section_key(path)}.html"><b>{esc(ctx["sec_name"](path))}</b><span>{esc(s.get("summary") or "")}</span><em>{screens(n)} · <code>{esc(path)}</code></em></a>')
+    b.append(section(tr("Sections"), f'<div class="cards">{"".join(seccards)}</div>', anchor="tree"))
 
     cats: dict[str, list[dict]] = OrderedDict()
     for pg in pages:
         cats.setdefault(pg["_cat"], []).append(pg)
     toc = ""
     for cat, items in cats.items():
-        toc += f'<h3 class="cat">{esc(cat)}<small>{len(items)} 画面</small></h3><div class="pgrid">'
+        toc += f'<h3 class="cat">{esc(cat)}<small>{screens(len(items))}</small></h3><div class="pgrid">'
         toc += "".join(page_card(pg, desc["pages"].get(pg["id"], {}), "") for pg in items) + "</div>"
-    b.append(section("画面一覧（分類別）", toc, anchor="pages", count=f"{len(pages)} 画面"))
+    b.append(section(tr("Screens by category"), toc, anchor="pages", count=screens(len(pages))))
 
     caps = '<div class="gallery">' + "".join(
         f'<a class="gi" href="captures/{pg["id"]}.html"><img src="{esc(pg["screenshot"])}" alt="" loading="lazy"><span>{esc(pg["_name"])} <small>{esc(pg["id"])}</small></span></a>'
         for pg in pages) + "</div>"
-    b.append(f'<details class="raw" id="captures"><summary>画面キャプチャ一覧（{len(pages)} 画面）</summary>{caps}</details>')
+    b.append(f'<details class="raw" id="captures"><summary>{tr("All screen captures ({n} screens)", n=len(pages))}</summary>{caps}</details>')
 
-    rep = (f'<ul><li>遮断した変更系リクエスト: {len(safety.get("blocked_requests", []))} 件（GET以外は全て遮断。アプリのデータは変更されていない）</li>'
-           f'<li>安全判定でクリックしなかった要素: {len(safety.get("skipped_elements", []))} 件（保存/削除/送信等、または用途不明）</li>'
-           f'<li>遷移しなかった危険URL: {len(safety.get("skipped_urls", []))} 件</li><li>エラー: {len(safety.get("errors", []))} 件</li>'
-           f'<li>巡回の方式: {esc(meta.get("method") or "crawl.py")}</li></ul>')
+    rep = (f'<ul><li>{tr("Blocked write requests: {n} (everything except GET is blocked; no application data was changed)", n=len(safety.get("blocked_requests", [])))}</li>'
+           f'<li>{tr("Elements not clicked under the safety rules: {n} (save / delete / submit and the like, or purpose unclear)", n=len(safety.get("skipped_elements", [])))}</li>'
+           f'<li>{tr("Risky URLs not opened: {n}", n=len(safety.get("skipped_urls", [])))}</li><li>{tr("Errors: {n}", n=len(safety.get("errors", [])))}</li>'
+           f'<li>{tr("Crawl method: {method}", method=esc(ld(meta.get("method")) or "crawl.py"))}</li></ul>')
     if safety.get("skipped_urls"):
         uniq = OrderedDict()
         for s_ in safety["skipped_urls"]:
             key = (s_["href"].split("#")[0], s_["reason"])
             uniq.setdefault(key, []).append(s_["page"])
-        rep += "<h4>遷移しなかったURL</h4>" + table(["URL", "理由", "出てきた画面"], [[k[0], k[1], f'{len(v)} 画面'] for k, v in uniq.items()])
+        rep += f'<h4>{tr("URLs not opened")}</h4>' + table(["URL", tr("Reason"), tr("Seen on")], [[k[0], ld(k[1]), screens(len(v))] for k, v in uniq.items()])
     if safety.get("errors"):
-        rep += "<h4>エラー</h4>" + table(["URL", "内容"], [[e["url"], e["error"]] for e in safety["errors"]])
-    b.append(section("巡回範囲と安全性レポート", rep, anchor="safety"))
-    return layout(f'{app.get("name") or meta["origin"]} 画面仕様書', "".join(b), "", ctx, None, ("index", ""))
+        rep += f'<h4>{tr("Errors")}</h4>' + table(["URL", tr("Detail")], [[e["url"], e["error"]] for e in safety["errors"]])
+    b.append(section(tr("Crawl scope and safety report"), rep, anchor="safety"))
+    return layout(tr("{name} — Screen spec", name=app.get("name") or meta["origin"]), "".join(b), "", ctx, None, ("index", ""))
 
 # ---------------------------------------------------------------------------
-# 自動抽出の補助
+# Helpers for auto-extracted data
 # ---------------------------------------------------------------------------
 def auto_ui_table(pg: dict) -> str:
-    rows = [[c.get("text") or c.get("ariaLabel") or c.get("title") or "(ラベルなし)", c.get("role") or c.get("tag"), "クリック検証済" if c.get("clickable") else f"未検証（{c.get('reason')}）"] for c in pg.get("clickables", [])]
-    return table(["要素（自動抽出）", "種別", "検証"], rows)
+    rows = [[c.get("text") or c.get("ariaLabel") or c.get("title") or tr("(no label)"), c.get("role") or c.get("tag"),
+             tr("Click verified") if c.get("clickable") else tr("Not verified ({reason})", reason=ld(c.get("reason")))] for c in pg.get("clickables", [])]
+    return table([tr("Element (auto-extracted)"), tr("Type"), tr("Check")], rows)
 
 
 def auto_inputs_table(pg: dict) -> str:
     rows = []
     for f in pg.get("forms", []):
         for fl in f.get("fields", []):
-            rows.append([fl.get("label") or fl.get("name") or fl.get("id") or fl.get("placeholder") or "-", fl.get("type"), "必須" if fl.get("required") else "", "", f'form:{f.get("name") or f.get("index")} method={f.get("method")}' + (" / 選択肢: " + ", ".join(fl["options"]) if fl.get("options") else "")])
+            rows.append([fl.get("label") or fl.get("name") or fl.get("id") or fl.get("placeholder") or "-", fl.get("type"), tr("Required") if fl.get("required") else "", "",
+                         f'form:{f.get("name") or f.get("index")} method={f.get("method")}' + (" / " + tr("options: {list}", list=", ".join(fl["options"])) if fl.get("options") else "")])
     for fl in pg.get("looseFields", []):
-        rows.append([fl.get("label") or fl.get("name") or fl.get("id") or fl.get("placeholder") or "-", fl.get("type"), "", "", "フォーム外"])
-    return table(["項目（自動抽出）", "種別", "必須", "バリデーション想定", "備考"], rows)
+        rows.append([fl.get("label") or fl.get("name") or fl.get("id") or fl.get("placeholder") or "-", fl.get("type"), "", "", tr("Outside a form")])
+    return table([tr("Field (auto-extracted)"), tr("Type"), tr("Required"), tr("Assumed validation"), tr("Notes")], rows)
 
 
 def auto_transitions(pg: dict, by_norm: dict) -> str:
@@ -586,42 +631,65 @@ def auto_transitions(pg: dict, by_norm: dict) -> str:
         if not ln.get("internal") or not ln.get("norm") or ln["norm"] in seen:
             continue
         seen.add(ln["norm"])
-        t = by_norm.get(ln["norm"])
-        rows.append([ln.get("text") or "(リンク)", (f'{t["_name"]} ({t["id"]})' if t else urlparse(ln["href"]).path), "リンク（自動抽出）"])
+        target = by_norm.get(ln["norm"])
+        rows.append([ln.get("text") or tr("(link)"), (f'{target["_name"]} ({target["id"]})' if target else urlparse(ln["href"]).path), tr("Link (auto-extracted)")])
     for st in pg.get("states", []):
-        if st.get("result") == "ページ遷移":
-            rows.append([f'「{st.get("label")}」をクリック', urlparse(st.get("url_after", "")).path, "クリック検証済"])
-    return table(["トリガー", "遷移先", "備考"], rows)
+        if is_navigation(st):
+            rows.append([tr("Click “{label}”", label=ld(st.get("label"))), urlparse(st.get("url_after", "")).path, tr("Click verified")])
+    return table([tr("Trigger"), tr("Goes to"), tr("Notes")], rows)
 
 
 def auto_raw(pg: dict) -> str:
-    out = "<h4>見出し</h4>" + (ul([f'{h["level"]}: {h["text"]}' for h in pg.get("headings", [])]) or "<p>-</p>")
-    out += "<h4>テーブル</h4>" + (table(["キャプション", "ヘッダ", "行数"], [[t.get("caption"), " | ".join(t.get("headers", [])), t.get("rows")] for t in pg.get("tables", [])]) or "<p>-</p>")
-    out += "<h4>内部リンク</h4>" + (table(["テキスト", "URL", "備考"], [[l.get("text"), l.get("href"), l.get("skipped", "")] for l in pg.get("links", []) if l.get("internal")]) or "<p>-</p>")
+    out = f'<h4>{tr("Headings")}</h4>' + (ul([f'{h["level"]}: {h["text"]}' for h in pg.get("headings", [])]) or "<p>-</p>")
+    out += f'<h4>{tr("Tables")}</h4>' + (table([tr("Caption"), tr("Headers"), tr("Rows")], [[tb.get("caption"), " | ".join(tb.get("headers", [])), tb.get("rows")] for tb in pg.get("tables", [])]) or "<p>-</p>")
+    out += f'<h4>{tr("Internal links")}</h4>' + (table([tr("Text"), "URL", tr("Notes")], [[l.get("text"), l.get("href"), ld(l.get("skipped", ""))] for l in pg.get("links", []) if l.get("internal")]) or "<p>-</p>")
     ext = [l for l in pg.get("links", []) if not l.get("internal")]
     if ext:
-        out += "<h4>外部リンク</h4>" + table(["テキスト", "URL"], [[l.get("text"), l.get("href")] for l in ext])
-    out += "<h4>クリック要素の安全判定</h4>" + (table(["要素", "種別", "判定", "理由", "セレクタ"], [[c.get("text") or c.get("ariaLabel") or c.get("title"), c.get("role") or c.get("tag"), "クリック" if c.get("clickable") else "スキップ", c.get("reason"), c.get("selector")] for c in pg.get("clickables", [])]) or "<p>-</p>")
-    out += "<h4>本文テキスト（先頭）</h4><pre>" + esc((pg.get("bodyText") or "")[:1500]) + "</pre>"
+        out += f'<h4>{tr("External links")}</h4>' + table([tr("Text"), "URL"], [[l.get("text"), l.get("href")] for l in ext])
+    out += f'<h4>{tr("Safety decision for clickable elements")}</h4>' + (table([tr("Element"), tr("Type"), tr("Decision"), tr("Reason"), tr("Selector")], [[c.get("text") or c.get("ariaLabel") or c.get("title"), c.get("role") or c.get("tag"), tr("Click") if c.get("clickable") else tr("Skip"), ld(c.get("reason")), c.get("selector")] for c in pg.get("clickables", [])]) or "<p>-</p>")
+    out += f'<h4>{tr("Body text (start)")}</h4><pre>' + esc((pg.get("bodyText") or "")[:1500]) + "</pre>"
     return out
+
+
+def first_sentence(text) -> str:
+    """The first sentence of a description, with its end mark. Works for CJK text (ends with 。) and for
+    text whose sentences end with ". " (English, Spanish, Korean ...)."""
+    text = text or ""
+    if "。" in text:
+        head = text.split("。")[0]
+        return head + "。" if head else ""
+    m = re.match(r"\s*(.+?[.!?])(\s|$)", text, re.S)
+    if m:
+        return m.group(1)
+    text = text.strip()
+    return text + tr(".") if text else ""
 
 
 # ---------------------------------------------------------------------------
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--crawl", required=True, help="crawl.py の出力ディレクトリ")
-    ap.add_argument("--descriptions", default=None, help="descriptions.json（既定: <crawl>/descriptions.json）")
-    ap.add_argument("--out", default=None, help="ブック出力先（既定: <crawl>/book）")
-    ap.add_argument("--init-descriptions", action="store_true", help="記入用テンプレートを生成（既存があれば不足分を追記）")
+    ap.add_argument("--crawl", required=True, help="crawl output directory (holds pages.json)")
+    ap.add_argument("--descriptions", default=None, help="descriptions.json (default: <crawl>/descriptions.json)")
+    ap.add_argument("--out", default=None, help="where to write the book (default: <crawl>/book)")
+    ap.add_argument("--init-descriptions", action="store_true", help="write the template to fill in (adds what is missing if the file exists)")
+    ap.add_argument("--lang", choices=list(i18n.LANGS), default=None,
+                    help="language of the book (default: _lang in descriptions.json; ja for a descriptions.json without _lang; otherwise en)")
     a = ap.parse_args()
+    global LANG
 
     crawl_dir = Path(a.crawl).resolve()
     crawl = read_json(crawl_dir / "pages.json")
     desc_path = Path(a.descriptions) if a.descriptions else crawl_dir / "descriptions.json"
     existing = read_json(desc_path) if desc_path.exists() else None
+    # A descriptions.json without _lang comes from before languages were supported: those projects are Japanese.
+    LANG = a.lang or (existing or {}).get("_lang") or ("ja" if existing is not None else i18n.DEFAULT)
+    if LANG not in i18n.LANGS:
+        LANG = i18n.DEFAULT
     if a.init_descriptions:
+        existing = existing or {}
+        existing["_lang"] = LANG  # the language the descriptions are written in; build and write read it
         init_descriptions(crawl, desc_path, existing)
-        print(f"テンプレートを書き出しました: {desc_path}  (画面 {len(crawl['pages'])} 件 / 階層 {len(build_tree(crawl['pages']))} 件)")
+        print(f"Wrote the template: {desc_path}  ({len(crawl['pages'])} screens / {len(build_tree(crawl['pages']))} sections / language: {i18n.language_name(LANG)})")
         return
 
     desc = existing or {"app": {}, "sections": {}, "pages": {}}
@@ -640,7 +708,7 @@ def main() -> None:
     for i, pg in enumerate(pages):
         d = desc["pages"].get(pg["id"], {})
         pg["_name"] = d.get("name") or pg.get("title") or path_of(pg)
-        pg["_cat"] = d.get("category") or "未分類"
+        pg["_cat"] = d.get("category") or tr("Uncategorized")
         p = path_of(pg)
         pg["_section"] = p if (p in nodes and nodes[p]["index_page"] is pg) else (("/" + "/".join(p.strip("/").split("/")[:-1])).rstrip("/") or "/")
         pg["_prev"] = pages[i - 1] if i > 0 else None
@@ -653,7 +721,7 @@ def main() -> None:
         if s.get("name"):
             return s["name"]
         if path == "/":
-            return "ルート"
+            return tr("Root")
         n = nodes.get(path)
         if n and n["index_page"]:
             return n["index_page"]["_name"]
@@ -675,26 +743,26 @@ def main() -> None:
 
     for pg in pages:
         d = desc["pages"].get(pg["id"], {})
-        (out / "pages" / f"{pg['id']}.html").write_text(page_spec_html(pg, d, ctx), encoding="utf-8")
-        (out / "captures" / f"{pg['id']}.html").write_text(page_capture_html(pg, d, ctx), encoding="utf-8")
+        emit(out / "pages" / f"{pg['id']}.html", page_spec_html(pg, d, ctx))
+        emit(out / "captures" / f"{pg['id']}.html", page_capture_html(pg, d, ctx))
     for path, node in nodes.items():
-        (out / "sections" / f"{section_key(path)}.html").write_text(section_html(path, node, desc["sections"].get(path, {}), ctx), encoding="utf-8")
-    (out / "overview.html").write_text(overview_html(ctx), encoding="utf-8")
-    (out / "index.html").write_text(index_html(ctx, safety), encoding="utf-8")
+        emit(out / "sections" / f"{section_key(path)}.html", section_html(path, node, desc["sections"].get(path, {}), ctx))
+    emit(out / "overview.html", overview_html(ctx))
+    emit(out / "index.html", index_html(ctx, safety))
     if ctx["has_guide"]:
         raw = (crawl_dir / "guide_body.html").read_text(encoding="utf-8")
         m = re.match(r"<!-- model: (\S+) -->", raw)
-        (out / "guide.html").write_text(guide_html(raw, m.group(1) if m else "Claude", ctx), encoding="utf-8")
+        emit(out / "guide.html", guide_html(raw, m.group(1) if m else "Claude", ctx))
 
     pf = sum(1 for pg in pages if desc["pages"].get(pg["id"], {}).get("specs"))
     sf = sum(1 for p in nodes if desc["sections"].get(p, {}).get("summary"))
-    print(f"画面仕様書を生成しました: {out}/index.html")
-    print(f"  画面 {len(pages)} 件（仕様項目記入済 {pf} 件） / 階層 {len(nodes)} 件（記入済 {sf} 件） / アプリ共通の仕様項目 {len(desc['app'].get('specs') or [])} 件")
+    print(f"Built the screen spec: {out}/index.html")
+    print(f"  {len(pages)} screens ({pf} with spec items) / {len(nodes)} sections ({sf} filled in) / {len(desc['app'].get('specs') or [])} app-wide spec items / language: {i18n.language_name(LANG)}")
     nc = sum(1 for p in nodes if p != "/" and len(descendant_pages(nodes, p)) > 1 and not desc["sections"].get(p, {}).get("common_specs"))
     if nc:
-        print(f"  画面が 2 つ以上ある階層のうち {nc} 件は共通仕様（common_specs）が空です。共通する仕様があれば持ち上げてください。")
+        print(f"  {nc} sections with two or more screens have no shared specs (common_specs). Move specs the screens have in common up to the section.")
     if pf < len(pages) or sf < len(nodes):
-        print("※ 未記入があります。descriptions.json を記入して再実行してください。")
+        print("Note: some entries are not filled in. Fill in descriptions.json and run again.")
 
 
 if __name__ == "__main__":

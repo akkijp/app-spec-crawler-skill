@@ -1,57 +1,60 @@
-# browser-use の注意と、手で回すときの手順 — Browser Use / Computer Use / Claude in Chrome
+# browser-use cautions and the manual crawl procedure — Browser Use / Computer Use / Claude in Chrome
 
-ふだんは `app-spec-crawler crawl`（browser-use。`scripts/bu_crawl.py`）で回す。下の「browser-use CLI の注意」はそのしくみの説明。
-browser-use が使えないとき、または利用者が「computer-use で」と指定したときは、Claude が画面を見て手で回す（下の「手順」）。
-判断はAIが行うためプログラムよりぶれやすい。そのぶん**記録を厳密に**取り、出力形式は `bu_crawl.py` と同じ（`pages.json` スキーマ）にして `build_book.py` に渡す。
-安全ルールは `safety-policy.md` の「手動巡回時の追加ルール」に従う。
+Normally the crawl is done with `app-spec-crawler crawl` (browser-use; `scripts/bu_crawl.py`). "Cautions for the browser-use CLI" below explains how that works.
+When browser-use cannot be used, or the user says "use computer-use", Claude looks at the screen and crawls by hand ("Procedure" below).
+Because the AI makes the decisions, they vary more than a program's. So **keep strict records**, and produce the same output format as `bu_crawl.py` (the `pages.json` schema) to hand to `build_book.py`.
+For safety, follow "Additional rules for a manual crawl" in `safety-policy.md`.
 
-## 道具の選択
-| 道具 | 使うとき | 備考 |
+## Choosing the tool
+| Tool | When to use | Notes |
 |---|---|---|
-| Claude in Chrome（`mcp__claude-in-chrome__*`） | 利用者の Chrome にログイン済みセッションがある | `chrome-browser` スキルを先に読む。新規タブで作業し、利用者の既存タブは触らない |
-| 内蔵ブラウザ（`mcp__Claude_Browser__*` / `mcp__remote-devices__Claude_Browser__*`） | 内蔵ブラウザ側にログインできる | `built-in-browser` スキルを先に読む |
-| Browser Use（`browser-use` CLI / Codex 等の browser ツール） | 利用者の起動中の Chrome にログイン済みセッションがある | 下の「browser-use CLI の注意」を読む。「表示／ヘッドレス」はツール側のオプションに従う。既定は表示 |
-| Computer Use（`mcp__remote-devices__computer_*` 等） | ブラウザ拡張が無く、画面操作しかできない | `computer-use` スキルを先に読む。スクショは画面単位なので、長いページはスクロールして複数枚撮り、`pXXX_s1.png, s2...` と連番にする |
+| Claude in Chrome (`mcp__claude-in-chrome__*`) | The user's Chrome has a logged-in session | Read the `chrome-browser` skill first. Work in a new tab; do not touch the user's existing tabs |
+| Built-in browser (`mcp__Claude_Browser__*` / `mcp__remote-devices__Claude_Browser__*`) | You can log in on the built-in browser side | Read the `built-in-browser` skill first |
+| Browser Use (`browser-use` CLI / the browser tool of Codex etc.) | The user's running Chrome has a logged-in session | Read "Cautions for the browser-use CLI" below. Follow the tool's own option for visible / headless. The default is visible |
+| Computer Use (`mcp__remote-devices__computer_*` etc.) | There is no browser extension and only screen operation is possible | Read the `computer-use` skill first. Screenshots are per screen, so scroll a long page and take several, numbered `pXXX_s1.png, s2...` |
 
-ヘッドレス指定があり、かつ道具がヘッドレスをサポートしない場合は、その旨を利用者に伝えて表示モードで続行する。
+If headless was requested and the tool does not support headless, tell the user so and continue in visible mode.
 
-## browser-use CLI の注意
-- **つなぐ先を名指しする。** 既定のままだと `localhost:9222` など別の Chrome（他の作業の画面なし Chrome 等）につながることがある。利用者に Chrome の `chrome://inspect/#remote-debugging` で遠隔デバッグを許可してもらい、`~/Library/Application Support/Google/Chrome/DevToolsActivePort`（1 行目がポート、2 行目がパス）から `BU_CDP_WS=ws://127.0.0.1:<port><path>` を作って毎回付ける。最初の接続で Chrome に許可の確認が出たら `browser-use mac-approve`。
-- つないだら `cdp("Browser.getVersion")["userAgent"]` に `HeadlessChrome` が入っていないこと、対象アプリのタブ（ログイン済み）があることを確かめてから始める。
-- Chrome のプロファイルは選べない（起動中の Chrome 全体につながる）。利用者がプロファイル名を言ったら、`Local State` の `profile.info_cache` で名前とアカウントを照らし、どれのつもりかを伝える。
-- 作業用のタブは `new_tab()` で 1 つだけ作り、利用者のタブには触らない。終わったら `close_tab()` で閉じる。
-- `app-spec-crawler crawl` はこれらを自動で行う（専用の接続 `BU_NAME=app-spec-crawler`・`BU_CDP_WS` の組み立て・作業用タブ・区切った実行・ログイン切れの検知）。以下は自分でスクリプトを書くときの注意。
-- 巡回は Python のスクリプトにして `browser-use < script.py` で流す（helpers は読み込み済み）。状態（キュー・訪問済み・pages）を JSON に毎ページ書き、30 画面ずつのように区切って何度も流せる形にする（1 回の実行の時間切れに備える）。
-- スクリーンショットは `Emulation.setDeviceMetricsOverride` で幅 1400px・高さをページの高さ（上限 6000px）にしてから `capture_screenshot()`。撮ったら 1400×900 に戻す。背景のタブのままで撮れる（Chrome を前に出さない）。
+## Cautions for the browser-use CLI
+- **Name the Chrome to connect to.** Left at the default, it may connect to a different Chrome such as `localhost:9222` (a headless Chrome from some other work, etc.). Have the user allow remote debugging at `chrome://inspect/#remote-debugging` in Chrome, build `BU_CDP_WS=ws://127.0.0.1:<port><path>` from `~/Library/Application Support/Google/Chrome/DevToolsActivePort` (line 1 is the port, line 2 is the path), and pass it every time. If Chrome shows a permission prompt on the first connection, `browser-use mac-approve`.
+- Once connected, confirm that `cdp("Browser.getVersion")["userAgent"]` does not contain `HeadlessChrome` and that a tab of the target app (logged in) exists, before starting.
+- A Chrome profile cannot be chosen (it connects to the whole running Chrome). If the user names a profile, match the name and account against `profile.info_cache` in `Local State` and tell them which one you take it to be.
+- Create exactly one working tab with `new_tab()` and do not touch the user's tabs. Close it with `close_tab()` when done.
+- `app-spec-crawler crawl` does all of this automatically (the dedicated connection `BU_NAME=app-spec-crawler`, building `BU_CDP_WS`, the working tab, batched runs, detecting an expired login). What follows is for when you write a script yourself.
+- Write the crawl as a Python script and run it with `browser-use < script.py` (the helpers are already loaded). Write the state (queue, visited, pages) to JSON after every page, and make it runnable again and again in batches such as 30 screens at a time (to survive the time limit of a single run).
+- Capture only after the screen has finished rendering: wait until the page stops changing (at least the `--wait` time, at most the `--settle-max` time in `bu_crawl.py`), not for a fixed delay alone.
+- For a screenshot, first expand the scroll frames inside the screen (elements with `overflow:auto/scroll` whose content is taller than the frame) to the height of their content (`EXPAND` in `bu_crawl.py`; it changes only how the DOM looks), set the width to 1400px and the height to the page height with `Emulation.setDeviceMetricsOverride`, then `capture_screenshot()`. For a screen taller than 6000px, scroll 6000px at a time and capture the continuation as `pXXX_s02.png` …, adding them to `states` as `s02` … (**never cut off because of length or depth**. The cap is 20 images per screen = 120000px; beyond that, leave a line in crawl.log). After capturing, set it back to 1400×900. Capturing works while the tab stays in the background (Chrome is not brought to the front).
+- Receive the structure extraction (`EXTRACT`) as a string via `JSON.stringify`, and read the `name` `id` `method` of forms and inputs with `getAttribute()`. In a form that has an input with `name="name"` or `name="id"`, `form.name` returns the input element, the element slips into the result, and CDP fails with `Object reference chain is too long`.
+- Apply the same URL rules as `bu_crawl.py` before opening anything: no dangerous keyword, no state-changing token (`_wpnonce`, `csrf_token`, `authenticity_token`, `sesskey` …), no action parameter (`action=`, `do=`, `op=`, `cmd=`, `task=`) with a value that is not read-only.
 
-## 作業ディレクトリ
+## Working directory
 ```
 spec_out/
-├── pages.json          ← 下記スキーマで自分で書く（逐次更新）
+├── pages.json          ← you write it yourself in the schema below (update as you go)
 ├── screenshots/        ← pXXX.png / pXXX_cNN.png
-├── safety_report.json  ← 押さなかった要素・遷移しなかったURL・エラー
-└── crawl.log           ← 時刻付きの操作ログ（何を押したか全て）
+├── safety_report.json  ← elements not pressed, URLs not opened, errors
+└── crawl.log           ← timestamped operation log (everything you pressed)
 ```
 
-## 手順
-1. 起点URLを開き、ログイン済みであることを確認する。ログイン画面なら利用者に再ログインを依頼して止まる。
-2. **ページ台帳**を作る: 現在のページに `p001` を振り、URL・タイトルを `pages.json` に記録し、全画面スクリーンショットを `screenshots/p001.png` に保存する。
-3. ページの構造を読み取る（ブラウザツールの「ページをテキストで読む」/ DOM取得を使う）:
-   - 見出し、ナビゲーション、内部リンク（href と表示テキスト）、フォームの入力項目（name/type/label/required/placeholder、**値は入力しない**）、テーブルのヘッダ、ボタン類。
-   - 内部リンクのうち危険キーワード（`safety_rules.json` の `deny_url_keywords`）を含むものは `skipped_urls` に記録し、キューに入れない。
-   - 残りの未訪問リンクをキュー（幅優先）に積む。`/users/123` のようなID付きURLは代表1件だけにする。
-4. **クリック探索**: ボタン・タブ・メニュー・アコーディオン・`role=button` を列挙し、1つずつ次を行う。
-   - 安全判定（`deny_click_keywords` に該当しない、submit でない、ラベルがある、無効化されていない）。不可なら `clickables[].reason` に理由を書いて飛ばす。
-   - **ページを再読込して初期状態に戻してから**要素を1回クリックする。
-   - 待ってスクリーンショット `pXXX_cNN.png` を撮り、`states[]` に `label / result（ページ遷移・モーダル・画面内変化・変化なし）/ url_after / modals` を記録する。
-   - モーダル内に新しい内部リンクがあればキューに追加する。
-   - 遷移した場合は遷移先URLを（危険でなければ）キューに追加し、元のページに戻る。
-   - 1ページあたりの上限（既定40）に達したら残りは `reason: "上限超過"` で記録する。
-5. キューの次のURLへ進み、2〜4 を繰り返す。上限ページ数（既定300）に達したら利用者に報告する。
-6. 各ページ終了ごとに `pages.json` と `crawl.log` を書き出す（途中で止まっても成果が残るように）。
-7. 完了後、`build_book.py --crawl spec_out --init-descriptions` → 説明記入 → `build_book.py --crawl spec_out` で `SKILL.md` ②③④へ合流する。階層ツリーは `norm_url` のパスから自動生成されるので、ID付きURLは `/users/{id}` のように `{id}` へ正規化して記録する。
+## Procedure
+1. Open the start URL and confirm you are logged in. If it is a login screen, ask the user to log in again and stop.
+2. Start the **page ledger**: give the current page `p001`, record the URL and title in `pages.json`, and save a full-page screenshot to `screenshots/p001.png`.
+3. Read the page structure (use the browser tool's "read the page as text" / DOM retrieval):
+   - Headings, navigation, internal links (href and visible text), form input fields (name/type/label/required/placeholder; **do not enter values**), table headers, buttons.
+   - Record in `skipped_urls` any internal link containing a dangerous keyword (`deny_url_keywords` in `safety_rules.json`), a state-changing token or a non-read-only action parameter, and do not queue it.
+   - Put the remaining unvisited links in the queue (breadth-first). For URLs with an ID such as `/users/123`, keep one representative only.
+4. **Click exploration**: list the buttons, tabs, menus, accordions and `role=button` elements, and for each one:
+   - Safety check (not matching `deny_click_keywords`, not a submit, has a label, not disabled). If it fails, write the reason in `clickables[].reason` and skip it.
+   - **Reload the page to return to the initial state**, then click the element once.
+   - Wait, take the screenshot `pXXX_cNN.png`, and record `label / result / url_after / modals` in `states[]`. For `result` use the same fixed English phrases the tools write (`build_book.py` translates them): `Page navigation`, `Modal/dialog shown`, `In-page change`, `No change`.
+   - If the modal contains new internal links, add them to the queue.
+   - If it navigated, add the destination URL to the queue (unless dangerous) and go back to the original page.
+   - When the per-page limit (default 40) is reached, record the rest with a `reason` saying the limit was exceeded.
+5. Move to the next URL in the queue and repeat 2–4. When the page limit (default 300) is reached, report to the user.
+6. Write out `pages.json` and `crawl.log` at the end of every page (so that the work survives a stop midway).
+7. When finished, run `build_book.py --crawl spec_out --init-descriptions` (or `app-spec-crawler describe spec_out --lang <code>`) → write the descriptions → `build_book.py --crawl spec_out` (or `app-spec-crawler build spec_out`), joining `SKILL.md` ②③④. The section tree is generated automatically from the path of `norm_url`, so record URLs with IDs normalized to `{id}`, like `/users/{id}`.
 
-## pages.json スキーマ（crawl.py と同一。手動時は使わない項目は省略可）
+## pages.json schema (same as crawl.py; in a manual crawl, unused fields may be omitted)
 ```json
 {
   "meta": { "start_url": "", "origin": "", "scope": [""], "generated_at": "", "headless": false,
@@ -62,31 +65,33 @@ spec_out/
     {
       "id": "p001", "url": "https://app.example.com/", "norm_url": "https://app.example.com/", "requested_url": "", "depth": 0, "parent": null,
       "title": "Dashboard", "visited_at": "2026-10-27T10:00:00", "screenshot": "screenshots/p001.png",
-      "headings": [{"level": "H1", "text": "ダッシュボード"}],
+      "headings": [{"level": "H1", "text": "Dashboard"}],
       "forms": [{"index": 0, "action": "", "method": "GET", "name": "search",
-                 "fields": [{"tag": "input", "type": "text", "name": "q", "id": "", "placeholder": "検索", "required": false, "label": "キーワード"}]}],
-      "looseFields": [], "tables": [{"caption": "", "headers": ["ID", "名前"], "rows": 20}], "nav": ["ホーム 顧客 設定"],
-      "modals_on_load": [], "bodyText": "（本文テキスト先頭 4000 文字）",
-      "links": [{"text": "顧客", "href": "https://app.example.com/customers", "internal": true, "norm": "https://app.example.com/customers"},
-                {"text": "ログアウト", "href": "https://app.example.com/logout", "internal": true, "skipped": "危険URLキーワード: logout"}],
-      "clickables": [{"index": 0, "tag": "button", "text": "絞り込み", "ariaLabel": "", "title": "", "role": "", "type": "button",
+                 "fields": [{"tag": "input", "type": "text", "name": "q", "id": "", "placeholder": "Search", "required": false, "label": "Keyword"}]}],
+      "looseFields": [], "tables": [{"caption": "", "headers": ["ID", "Name"], "rows": 20}], "nav": ["Home Customers Settings"],
+      "modals_on_load": [], "bodyText": "(first 40000 characters of the body text)",
+      "links": [{"text": "Customers", "href": "https://app.example.com/customers", "internal": true, "norm": "https://app.example.com/customers"},
+                {"text": "Log out", "href": "https://app.example.com/logout", "internal": true, "skipped": "Risky URL keyword: logout"}],
+      "clickables": [{"index": 0, "tag": "button", "text": "Filter", "ariaLabel": "", "title": "", "role": "", "type": "button",
                       "selector": "#filterBtn", "inForm": false, "disabled": false, "clickable": true, "reason": "ok"},
-                     {"index": 1, "tag": "button", "text": "保存", "clickable": false, "reason": "禁止キーワード: 保存"}],
-      "states": [{"id": "c01", "label": "絞り込み", "selector": "#filterBtn", "role": "button",
-                  "result": "モーダル/ダイアログ表示", "screenshot": "screenshots/p001_c01.png",
-                  "url_after": "https://app.example.com/", "modals": [{"title": "絞り込み条件"}], "changed": true}]
+                     {"index": 1, "tag": "button", "text": "Save", "clickable": false, "reason": "Blocked keyword: save"}],
+      "states": [{"id": "c01", "label": "Filter", "selector": "#filterBtn", "role": "button",
+                  "result": "Modal/dialog shown", "screenshot": "screenshots/p001_c01.png",
+                  "url_after": "https://app.example.com/", "modals": [{"title": "Filter conditions"}], "changed": true}]
     }
   ]
 }
 ```
+Text taken from the app (`title`, `headings`, labels, `bodyText`) is recorded as it appears on screen, in the app's language. The fixed phrases (`result`, `reason`) are written in English, as `bu_crawl.py` does.
+
 `safety_report.json`:
 ```json
-{ "blocked_requests": [], "skipped_elements": [{"page": "p001", "text": "保存", "selector": "", "reason": "禁止キーワード: 保存"}],
-  "skipped_urls": [{"page": "p001", "href": "https://app.example.com/logout", "reason": "危険URLキーワード: logout"}], "errors": [] }
+{ "blocked_requests": [], "skipped_elements": [{"page": "p001", "text": "Save", "selector": "", "reason": "Blocked keyword: save"}],
+  "skipped_urls": [{"page": "p001", "href": "https://app.example.com/logout", "reason": "Risky URL keyword: logout"}], "errors": [] }
 ```
 
-## Computer Use 特有の注意
-- 画面全体ではなくブラウザウィンドウのみを撮る。利用者の他のウィンドウ・通知が写り込まないよう最大化する。
-- 長いページはスクロールしながら撮影し、`pXXX_s01.png … s0N.png` と命名。`screenshot` には先頭の1枚を入れ、残りは `extra_screenshots: []` に列挙する（`build_book.py` は未対応なので、必要なら `states` として登録して掲載する）。
-- クリック座標の誤差で隣の「保存」を押す事故が起こり得る。変更系ボタンの**隣接要素**はクリック前にズーム表示で位置を確認するか、押さない。
-- キーボードで文字を打たない（アドレスバーへのURL入力のみ可）。
+## Cautions specific to Computer Use
+- Capture only the browser window, not the whole screen. Maximize it so that the user's other windows and notifications do not get into the picture.
+- Capture a long page while scrolling and name the images `pXXX_s01.png … s0N.png`. Put the first one in `screenshot` and list the rest in `extra_screenshots: []` (`build_book.py` does not support this, so register them as `states` if they need to appear in the book).
+- A click-coordinate error can hit the "Save" next to your target. For an element **adjacent** to a state-changing button, zoom in and check the position before clicking, or do not press it.
+- Do not type with the keyboard (typing a URL into the address bar is the only exception).
