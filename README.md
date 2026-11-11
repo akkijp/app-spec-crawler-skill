@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/0f28552f-e581-4f41-b838-a610962fed5f
+
 # app-spec-crawler
 
 **Point Claude Code at any web app you're logged into. Get the spec — every screen, with screenshots. Read-only.**
