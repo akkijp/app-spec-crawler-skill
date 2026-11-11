@@ -39,6 +39,8 @@ https://github.com/user-attachments/assets/0f28552f-e581-4f41-b838-a610962fed5f
 
 どちらも HTML です。ブラウザで開くだけで読め、zip にして渡せます。
 
+**[実物を見る →](https://akkijp.github.io/app-spec-crawler-examples/)** WordPress の管理画面を回した見本です（英語。50 画面・仕様 376 項目。手で書いたものはありません）。
+
 文書は、Claude と話している言語で書かれます。対応は英語・日本語・中国語（簡体字）・スペイン語・韓国語の 5 つで、それ以外の言語では枠が英語になります。中国語・スペイン語・韓国語の言い回しは機械翻訳です。直しを歓迎します。
 
 ## <img src="docs/readme/ui/icon-safe.png" width="32" height="32" align="absmiddle" alt="" /> 読み取り専用
@@ -93,7 +95,7 @@ https://app.example.com/admin/ 以下を巡回して、仕様書を作って
 
 手元の WordPress の管理画面（中身は架空）で測った値です。
 
-- 47 画面の巡回に 8 分 20 秒
+- 50 画面の巡回に 8 分 46 秒
 - 50 画面ほどで、頼んでから文書ができるまで約 20 分
 - システム概要書は `claude -p` で書きます。費用の上限は既定で 8 ドルです（`--budget`）。画面ごとの説明は、使っている Claude Code の会話の中で書きます
 

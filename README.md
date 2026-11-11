@@ -39,6 +39,8 @@ I inherited an admin panel with no documentation. This [Claude Code](https://doc
 
 Both are plain HTML. Open them in a browser, zip them, hand them over.
 
+**[See a real one →](https://akkijp.github.io/app-spec-crawler-examples/)** A WordPress admin: 50 screens, 376 spec items, nothing written by hand.
+
 The documents are written in the language you talk to Claude in. Five languages are supported: English, Japanese, Simplified Chinese, Spanish and Korean. In any other language the frame is in English. The Chinese, Spanish and Korean wording is machine-translated; corrections are welcome.
 
 ## <img src="docs/readme/ui/icon-safe.png" width="32" height="32" align="absmiddle" alt="" /> Read-only
@@ -91,7 +93,7 @@ Claude crawls the screens, describes each one, builds the screen spec, writes th
 
 Measured on a local WordPress admin (fictional content):
 
-- 47 screens crawled in 8 min 20 s
+- 50 screens crawled in 8 min 46 s
 - About 20 minutes from the prompt to the finished documents for roughly 50 screens
 - Writing the system guide calls `claude -p` with a budget cap of $8 by default (`--budget`). Describing the screens uses your Claude Code session.
 
